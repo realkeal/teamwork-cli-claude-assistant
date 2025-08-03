@@ -5,7 +5,9 @@
       "Bash(bash:*)",
       "Bash(chmod:*)",
       "Bash(./test_progress.sh:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(./tw flags)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }
