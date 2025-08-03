@@ -213,8 +213,19 @@ generate_short_summary() {
     
     # Extract task and comment information for AI
     local task_name=$(echo "$task_data" | jq -r '.task.name // "Unknown Task"')
-    local task_description=$(echo "$task_data" | jq -r '.task.description // "No description"')
+    local task_description=$(echo "$task_data" | jq -r '.task.description // ""')
     local comments=$(echo "$task_data" | jq -r '.comments[]? | "- " + (.body // "")' | head -5)
+    local comment_count=$(echo "$task_data" | jq '.comments | length')
+    
+    # Check if task is empty (no description and no comments)
+    if [ -z "$task_description" ] || [ "$task_description" = "null" ] || [ "$task_description" = "" ]; then
+        if [ "$comment_count" -eq 0 ] || [ -z "$comments" ]; then
+            local empty_summary="Empty task"
+            echo "$empty_summary" > "$cache_file"
+            echo "$empty_summary"
+            return 0
+        fi
+    fi
     
     # Debug output if requested
     if [ "$debug_mode" = "true" ]; then
@@ -280,10 +291,21 @@ generate_long_summary() {
     
     # Extract task and comment information for AI
     local task_name=$(echo "$task_data" | jq -r '.task.name // "Unknown Task"')
-    local task_description=$(echo "$task_data" | jq -r '.task.description // "No description"')
+    local task_description=$(echo "$task_data" | jq -r '.task.description // ""')
     local priority=$(echo "$task_data" | jq -r '.task.priority // "Normal"')
     local due_date=$(echo "$task_data" | jq -r '.task.dueDate // "Not set"')
     local comments=$(echo "$task_data" | jq -r '.comments[]? | "- " + (.body // "")' | head -5)
+    local comment_count=$(echo "$task_data" | jq '.comments | length')
+    
+    # Check if task is empty (no description and no comments)
+    if [ -z "$task_description" ] || [ "$task_description" = "null" ] || [ "$task_description" = "" ]; then
+        if [ "$comment_count" -eq 0 ] || [ -z "$comments" ]; then
+            local empty_summary="Empty task - no description or comments available"
+            echo "$empty_summary" > "$cache_file"
+            echo "$empty_summary"
+            return 0
+        fi
+    fi
     
     # Debug output if requested
     if [ "$debug_mode" = "true" ]; then
@@ -786,6 +808,7 @@ get_tasks() {
     local tags_filter=""
     local summary_mode=""
     local debug_mode="false"
+    local order_by="duedate"  # Default ordering
     
     # Parse flags
     shift # Remove 'tasks' from arguments
@@ -813,6 +836,10 @@ get_tasks() {
                 ;;
             --summary)
                 summary_mode="short"
+                shift
+                ;;
+            --order=*)
+                order_by="${1#*=}"
                 shift
                 ;;
             --debug)
@@ -922,7 +949,35 @@ get_tasks() {
         tags_lookup=$(fetch_tags "$project_id")
     fi
     
-    # Store tasks data for processing
+    # Store tasks data for processing with dynamic sorting
+    local sort_expression=""
+    local order_description=""
+    
+    case "$order_by" in
+        "priority")
+            # Sort by priority: high=1, medium=2, normal/null=3, low=4
+            sort_expression='sort_by(if .priority == "high" then 1 elif .priority == "medium" then 2 elif (.priority == "low") then 4 else 3 end)'
+            order_description="priority order (high → medium → normal → low)"
+            ;;
+        "lastupdated"|"updated")
+            sort_expression='sort_by(.updatedAt // "1900-01-01") | reverse'
+            order_description="last updated (newest first)"
+            ;;
+        "duedate"|"due")
+            sort_expression='sort_by(.dueDate // "9999-12-31")'
+            order_description="due date order (overdue first)"
+            ;;
+        "start"|"startdate")
+            sort_expression='sort_by(.startDate // "9999-12-31")'
+            order_description="start date order"
+            ;;
+        *)
+            # Default to due date
+            sort_expression='sort_by(.dueDate // "9999-12-31")'
+            order_description="due date order (overdue first)"
+            ;;
+    esac
+    
     local tasks_data=$(echo "$response" | jq -r --arg user_id "$USER_ID" '
         .tasks[]
         | select(.assigneeUserIds[]? == ($user_id | tonumber))
@@ -937,14 +992,14 @@ get_tasks() {
             tagIds: .tagIds,
             updatedAt: .updatedAt
         }
-    ' | jq -s 'sort_by(.dueDate // "9999-12-31")')
+    ' | jq -s "$sort_expression")
     
     # Count total tasks found
     local task_count=$(echo "$tasks_data" | jq 'length')
     
     # Display task summary
     echo "Found $task_count task(s) assigned to you."
-    echo "Tasks displayed in due date order (overdue first)."
+    echo "Tasks displayed in $order_description."
     echo
     
     # Format and display tasks
@@ -1183,6 +1238,7 @@ TASK OPTIONS:
     --due=VALUE          Filter by due date (today, overdue, DD/MM/YYYY, YYYY-MM-DD)
     --start=VALUE        Filter by start date (today, DD/MM/YYYY, YYYY-MM-DD)  
     --tags=VALUE         Filter by tag name (case insensitive)
+    --order=VALUE        Sort tasks by: priority, lastupdated, duedate, start (default: duedate)
     --summary            Add short AI summaries to task list
     --summary=long       Add detailed AI summaries to task list
     --debug              Show debug information about API data extraction
@@ -1197,12 +1253,15 @@ FEATURES:
 
 EXAMPLES:
     tw                              # Select project interactively
-    tw tasks                        # List all tasks
+    tw tasks                        # List all tasks (ordered by due date)
+    tw tasks --order=priority       # List tasks ordered by priority (high first)
+    tw tasks --order=lastupdated    # List tasks ordered by last update
     tw tasks --summary              # List tasks with short AI summaries
     tw tasks --summary=long         # List tasks with detailed AI summaries
     tw tasks --priority=high        # Show only high priority tasks
     tw tasks --due=today            # Show tasks due today
     tw tasks --due=overdue          # Show overdue tasks
+    tw tasks --order=start --summary # Show tasks by start date with summaries
     tw summary 123456               # Get detailed AI summary for task
     tw summary "Fix login bug"      # Get AI summary by task title
     tw open 123456                  # Get URL for task by ID
