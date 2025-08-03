@@ -1,0 +1,1331 @@
+#!/bin/bash
+
+# Teamwork.com CLI Tool
+# Usage: tw <command>
+
+set -e
+
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Cache directory
+CACHE_DIR="/tmp/.tw_cache"
+mkdir -p "$CACHE_DIR"
+
+# Cache expiry time in seconds (30 minutes)
+CACHE_EXPIRY=1800
+
+# Function to get cache file path
+get_cache_file() {
+    local cache_key="$1"
+    echo "$CACHE_DIR/${cache_key}.json"
+}
+
+# Function to check if cache is valid
+is_cache_valid() {
+    local cache_file="$1"
+    local task_updated_at="$2"  # Optional - if provided, use task-based validation
+    
+    if [ ! -f "$cache_file" ]; then
+        return 1
+    fi
+    
+    # If task_updated_at is provided, use task-based validation (infinite cache unless task updated)
+    if [ -n "$task_updated_at" ]; then
+        # Check if cache metadata file exists
+        local cache_meta_file="${cache_file}.meta"
+        if [ ! -f "$cache_meta_file" ]; then
+            return 1  # No metadata, cache invalid
+        fi
+        
+        # Read cached task updatedAt timestamp
+        local cached_updated_at=$(cat "$cache_meta_file" 2>/dev/null)
+        
+        # Compare timestamps - cache valid if task hasn't been updated since cache creation
+        [ "$cached_updated_at" = "$task_updated_at" ]
+    else
+        # Fall back to time-based validation for non-task cache (projects, etc.)
+        local cache_time=$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null)
+        local current_time=$(date +%s)
+        local age=$((current_time - cache_time))
+        
+        [ $age -lt $CACHE_EXPIRY ]
+    fi
+}
+
+# Function to save to cache
+save_to_cache() {
+    local cache_key="$1"
+    local data="$2"
+    local task_updated_at="$3"  # Optional - if provided, save task metadata
+    local cache_file=$(get_cache_file "$cache_key")
+    
+    echo "$data" > "$cache_file"
+    
+    # If task_updated_at is provided, save metadata for task-based cache validation
+    if [ -n "$task_updated_at" ]; then
+        local cache_meta_file="${cache_file}.meta"
+        echo "$task_updated_at" > "$cache_meta_file"
+    fi
+}
+
+# Function to load from cache
+load_from_cache() {
+    local cache_key="$1"
+    local cache_file=$(get_cache_file "$cache_key")
+    
+    if is_cache_valid "$cache_file"; then
+        cat "$cache_file"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to clear all cache
+clear_cache() {
+    rm -rf "$CACHE_DIR"
+    mkdir -p "$CACHE_DIR"
+    echo "Cache cleared successfully."
+}
+
+# Function to check if cached task data is still current by comparing updatedAt timestamps
+is_task_data_current() {
+    local cache_file="$1"
+    local project_id="$2"
+    
+    # If cache doesn't exist, it's not current
+    if [ ! -f "$cache_file" ]; then
+        return 1
+    fi
+    
+    # Get the most recent updatedAt from cached tasks
+    local cached_updated=$(cat "$cache_file" | jq -r '.tasks | map(.updatedAt) | max')
+    if [ "$cached_updated" = "null" ] || [ -z "$cached_updated" ]; then
+        return 1
+    fi
+    
+    # Fetch just basic task info to check updatedAt timestamps
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local current_response
+    
+    if [ "$project_id" = "ALL" ]; then
+        current_response=$(curl -s -H "$auth_header" \
+            "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,updatedAt" 2>/dev/null)
+    else
+        current_response=$(curl -s -H "$auth_header" \
+            "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,updatedAt" 2>/dev/null)
+    fi
+    
+    # Check if API call failed
+    if [ $? -ne 0 ] || [ -z "$current_response" ]; then
+        # If API call fails, assume cache is still valid to avoid breaking functionality
+        return 0
+    fi
+    
+    # Get the most recent updatedAt from current data
+    local current_updated=$(echo "$current_response" | jq -r '.tasks | map(.updatedAt) | max' 2>/dev/null)
+    if [ "$current_updated" = "null" ] || [ -z "$current_updated" ]; then
+        # If we can't get current timestamp, assume cache is valid
+        return 0
+    fi
+    
+    # Compare timestamps - return 0 if they match (current), 1 if different (not current)
+    if [ "$cached_updated" = "$current_updated" ]; then
+        return 0  # Data is current
+    else
+        return 1  # Data is not current
+    fi
+}
+
+# Function to check if Claude CLI is available
+check_claude_available() {
+    if ! command -v claude &> /dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# Function to show progress bar
+show_progress_bar() {
+    local current="$1"
+    local total="$2"
+    local width=20
+    local percentage=$((current * 100 / total))
+    local filled=$((current * width / total))
+    local empty=$((width - filled))
+    
+    local bar=""
+    for ((i=0; i<filled; i++)); do
+        bar+="█"
+    done
+    for ((i=0; i<empty; i++)); do
+        bar+="░"
+    done
+    
+    echo -ne "\rGenerating AI summary $current of $total [$bar] ${percentage}% complete..." >&2
+}
+
+# Function to fetch task with latest 5 comments for AI context
+get_task_with_comments() {
+    local task_id="$1"
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    
+    # Fetch task details - clean control characters that break JSON parsing
+    local task_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id.json" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
+    if [ $? -ne 0 ] || [ -z "$task_response" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Fetch latest 5 comments - clean control characters
+    local comments_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=5" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
+    
+    # Combine task and comments data
+    local combined_data=$(jq -n \
+        --argjson task "$task_response" \
+        --argjson comments "$comments_response" \
+        '{task: $task.task, comments: $comments.comments}')
+    
+    echo "$combined_data"
+}
+
+# Function to generate short AI summary (1-2 sentences)
+generate_short_summary() {
+    local task_data="$1"
+    local task_id="$2"
+    local last_updated="$3"
+    local debug_mode="${4:-false}"
+    
+    if ! check_claude_available; then
+        echo "AI summary unavailable"
+        return 1
+    fi
+    
+    # Check cache first
+    local cache_key="ai_short_${task_id}_${last_updated}"
+    local cache_file=$(get_cache_file "$cache_key")
+    
+    if [ -f "$cache_file" ]; then
+        cat "$cache_file"
+        return 0
+    fi
+    
+    # Extract task and comment information for AI
+    local task_name=$(echo "$task_data" | jq -r '.task.name // "Unknown Task"')
+    local task_description=$(echo "$task_data" | jq -r '.task.description // "No description"')
+    local comments=$(echo "$task_data" | jq -r '.comments[]? | "- " + (.body // "")' | head -5)
+    
+    # Debug output if requested
+    if [ "$debug_mode" = "true" ]; then
+        echo "=== DEBUG: Task Data Structure ===" >&2
+        echo "Task Name: $task_name" >&2
+        echo "Task Description: $task_description" >&2
+        echo "Comments Count: $(echo "$task_data" | jq '.comments | length')" >&2
+        echo "Comments:" >&2
+        echo "$comments" >&2
+        echo "=== END DEBUG ===" >&2
+    fi
+    
+    # Build AI prompt with clear context labels
+    local prompt="You are analyzing a Teamwork task assigned to you. Carefully read the task title, description, and recent comments to understand the current status and what you need to know.
+
+TASK TITLE: $task_name
+
+TASK DESCRIPTION: $task_description
+
+RECENT COMMENTS (most recent first):
+$comments
+
+Based on the task title, description, and comments above, provide a concise 1-2 sentence summary that tells you:
+1. What is the current status of this task?
+2. What should you focus on or do next?
+
+Focus on actionable information that helps you understand where things stand and what your next steps should be."
+    
+    # Generate AI summary
+    local ai_response=$(echo "$prompt" | claude 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$ai_response" ]; then
+        echo "AI summary unavailable"
+        return 1
+    fi
+    
+    # Clean up response and cache it
+    local clean_response=$(echo "$ai_response" | sed 's/^[ \t]*//;s/[ \t]*$//' | head -3 | tr '\n' ' ' | sed 's/  */ /g')
+    echo "$clean_response" > "$cache_file"
+    echo "$clean_response"
+}
+
+# Function to generate long AI summary with sections
+generate_long_summary() {
+    local task_data="$1"
+    local task_id="$2"
+    local last_updated="$3"
+    local debug_mode="${4:-false}"
+    
+    if ! check_claude_available; then
+        echo "AI summary unavailable"
+        return 1
+    fi
+    
+    # Check cache first
+    local cache_key="ai_long_${task_id}_${last_updated}"
+    local cache_file=$(get_cache_file "$cache_key")
+    
+    if [ -f "$cache_file" ]; then
+        cat "$cache_file"
+        return 0
+    fi
+    
+    # Extract task and comment information for AI
+    local task_name=$(echo "$task_data" | jq -r '.task.name // "Unknown Task"')
+    local task_description=$(echo "$task_data" | jq -r '.task.description // "No description"')
+    local priority=$(echo "$task_data" | jq -r '.task.priority // "Normal"')
+    local due_date=$(echo "$task_data" | jq -r '.task.dueDate // "Not set"')
+    local comments=$(echo "$task_data" | jq -r '.comments[]? | "- " + (.body // "")' | head -5)
+    
+    # Debug output if requested
+    if [ "$debug_mode" = "true" ]; then
+        echo "=== DEBUG: Long Summary Data ===" >&2
+        echo "Task Name: $task_name" >&2
+        echo "Task Description: $task_description" >&2
+        echo "Priority: $priority" >&2
+        echo "Due Date: $due_date" >&2
+        echo "Comments Count: $(echo "$task_data" | jq '.comments | length')" >&2
+        echo "Comments:" >&2
+        echo "$comments" >&2
+        echo "=== END DEBUG ===" >&2
+    fi
+    
+    # Build AI prompt with comprehensive context
+    local prompt="You are analyzing a Teamwork task assigned to you. Carefully examine the task title, description, and recent comments to provide a comprehensive analysis of the current situation and what you need to do.
+
+TASK TITLE: $task_name
+
+PRIORITY: $priority
+
+DUE DATE: $due_date
+
+TASK DESCRIPTION: $task_description
+
+RECENT COMMENTS (most recent first):
+$comments
+
+Analyze the task title, description, and comments above to understand:
+- What work has been done so far?
+- What is the current status/progress?
+- What blockers or issues exist?
+- What should you do next?
+
+Format your response exactly as:
+
+SUMMARY: [2-3 sentences about the current status and progress based on analyzing the title, description, and comments. Focus on what you need to know about where things stand.]
+
+NEXT STEPS:
+- [specific action you should take based on the task context]
+- [another actionable step if applicable]
+- [additional steps as needed to move forward]
+
+Prioritize actionable insights that help you understand your current responsibilities and next actions for this specific task."
+    
+    # Generate AI summary
+    local ai_response=$(echo "$prompt" | claude 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$ai_response" ]; then
+        echo "AI summary unavailable"
+        return 1
+    fi
+    
+    # Cache and return response
+    echo "$ai_response" > "$cache_file"
+    echo "$ai_response"
+}
+
+# Load environment variables from .env file in script directory or user's home
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+elif [ -f "$HOME/.tw.env" ]; then
+    export $(grep -v '^#' "$HOME/.tw.env" | xargs)
+else
+    echo "Error: .env file not found."
+    echo "Create either:"
+    echo "  - $SCRIPT_DIR/.env (local to script)"
+    echo "  - $HOME/.tw.env (global config)"
+    echo ""
+    echo "Use $SCRIPT_DIR/.env.example as template"
+    exit 1
+fi
+
+# Check required environment variables
+if [ -z "$TEAMWORK_URL" ] || [ -z "$API_KEY" ] || [ -z "$PASSWORD" ] || [ -z "$USER_ID" ]; then
+    echo "Error: Missing required environment variables. Check your .env file."
+    exit 1
+fi
+
+# Function to fetch all projects user is assigned to
+fetch_assigned_projects() {
+    local cache_key="projects_${USER_ID}"
+    
+    # Try to load from cache first
+    local cache_file=$(get_cache_file "$cache_key")
+    if is_cache_valid "$cache_file"; then
+        echo "Loading projects from cache..." >&2
+        cat "$cache_file"
+        return 0
+    fi
+    
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    
+    echo "Finding projects you are assigned to..." >&2
+    
+    # Fetch projects where user is assigned using the projects endpoint
+    local response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/projects.json?userId=$USER_ID&pageSize=200")
+    
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to fetch projects from Teamwork API" >&2
+        exit 1
+    fi
+    
+    # Check if response contains error
+    local error=$(echo "$response" | jq -r '.error // empty')
+    if [ -n "$error" ]; then
+        echo "API Error: $error" >&2
+        exit 1
+    fi
+    
+    # Extract projects and format them, add ALL PROJECTS option
+    local formatted_projects=$(echo "$response" | jq '
+        [.projects[] | {id: .id, name: .name}] + [{"id": "ALL", "name": "ALL PROJECTS"}]
+    ')
+    
+    # Save to cache
+    save_to_cache "$cache_key" "$formatted_projects"
+    
+    echo "$formatted_projects"
+}
+
+# Function to display fancy splash screen
+show_splash_screen() {
+    clear
+    echo ""
+    echo ""
+    echo ""
+    # TW CLI - centered
+    echo "                    TEAMWORK CLI"
+    echo ""
+    echo ""
+    echo "                     v$(date +%Y) - Built by Anthony Keal"
+    echo "                      contact@business.anthonykeal.com.au"
+    echo ""
+    echo ""
+    echo "Press any key to continue..."
+    
+    # Wait for user input instead of sleep
+    read -n 1 -s
+}
+
+# Function for project selection wizard with arrow key navigation
+project_wizard() {
+    # Show splash screen first
+    show_splash_screen
+    
+    local projects_json=$(fetch_assigned_projects)
+    
+    # Debug: check what we got
+    if [ -z "$projects_json" ]; then
+        echo "Error: No projects data received"
+        exit 1
+    fi
+    
+    local project_count=$(echo "$projects_json" | jq 'length' 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$project_count" ]; then
+        echo "Error: Invalid JSON data received"
+        echo "Debug data: $projects_json"
+        exit 1
+    fi
+    
+    if [ "$project_count" -eq 0 ]; then
+        echo "No projects found."
+        exit 1
+    fi
+    
+    local selected=0
+    local key
+    
+    # Function to display projects list
+    display_projects() {
+        clear
+        echo "Select a project:"
+        echo "Use up/down arrow keys to navigate, Enter to select, q to quit"
+        echo
+        
+        for i in $(seq 0 $((project_count - 1))); do
+            local project_id=$(echo "$projects_json" | jq -r ".[$i].id")
+            local project_name=$(echo "$projects_json" | jq -r ".[$i].name")
+            
+            if [ $i -eq $selected ]; then
+                if [ "$project_id" = "ALL" ]; then
+                    printf "> %s\n" "$project_name"
+                else
+                    printf "> ID:%s %s\n" "$project_id" "$project_name"
+                fi
+            else
+                if [ "$project_id" = "ALL" ]; then
+                    printf "  %s\n" "$project_name"
+                else
+                    printf "  ID:%s %s\n" "$project_id" "$project_name"
+                fi
+            fi
+        done
+    }
+    
+    display_projects
+    
+    while true; do
+        read -rsn1 key
+        case "$key" in
+            $'\x1b')  # ESC sequence
+                read -rsn2 key
+                case "$key" in
+                    '[A')  # Up arrow
+                        selected=$((selected - 1))
+                        if [ $selected -lt 0 ]; then
+                            selected=$((project_count - 1))
+                        fi
+                        display_projects
+                        ;;
+                    '[B')  # Down arrow
+                        selected=$((selected + 1))
+                        if [ $selected -ge $project_count ]; then
+                            selected=0
+                        fi
+                        display_projects
+                        ;;
+                esac
+                ;;
+            '')  # Enter key
+                local selected_project_id=$(echo "$projects_json" | jq -r ".[$selected].id")
+                echo
+                echo "Selected project: $(echo "$projects_json" | jq -r ".[$selected].name")"
+                
+                # Store selected project in a temp file for future use
+                echo "$selected_project_id" > /tmp/.tw_selected_project
+                exit 0
+                ;;
+            'q'|'Q')
+                echo
+                echo "Cancelled."
+                exit 0
+                ;;
+        esac
+    done
+}
+
+# Function to select project if multiple exist
+select_project() {
+    # Check if there's a stored project selection
+    if [ -f "/tmp/.tw_selected_project" ]; then
+        local stored_project=$(cat /tmp/.tw_selected_project)
+        if [ -n "$stored_project" ]; then
+            echo "$stored_project"
+            return
+        fi
+    fi
+    
+    # If no stored project, return empty and let calling function handle it
+    echo ""
+    return 1
+}
+
+# Function to format date from ISO to DD-MM-YYYY
+format_date() {
+    local iso_date="$1"
+    if [ -n "$iso_date" ] && [ "$iso_date" != "null" ]; then
+        date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso_date" "+%d-%m-%Y" 2>/dev/null || echo "No due date"
+    else
+        echo "No due date"
+    fi
+}
+
+# Function to format markdown bold text for terminal
+format_markdown() {
+    local text="$1"
+    # Convert **text** to bold using ANSI escape codes
+    echo "$text" | sed 's/\*\*\([^*]*\)\*\*/\x1b[1m\1\x1b[0m/g'
+}
+
+# Function to fetch tags for the project and create a lookup map
+fetch_tags() {
+    local project_id="$1"
+    local cache_key="tags_global"
+    
+    # Try to load from cache first
+    local cache_file=$(get_cache_file "$cache_key")
+    if is_cache_valid "$cache_file"; then
+        echo "Loading tags from cache..." >&2
+        cat "$cache_file"
+        return 0
+    fi
+    
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    
+    # Fetch tags - the API seems to be global but we can filter if needed
+    local response=$(curl -s -H "$auth_header" \
+        "$TEAMWORK_URL/projects/api/v3/tags.json?pageSize=500")
+    
+    if [ $? -ne 0 ]; then
+        echo "{}" # Return empty object on error
+        return 1
+    fi
+    
+    # Check if response contains error
+    local error=$(echo "$response" | jq -r '.error // empty')
+    if [ -n "$error" ]; then
+        echo "{}" # Return empty object on error
+        return 1
+    fi
+    
+    # Convert tags array to lookup object {tagId: {name: "tag name", color: "color"}}
+    local tags_lookup=$(echo "$response" | jq -r '
+        .tags | map({(.id | tostring): {name: .name, color: .color}}) | add // {}
+    ')
+    
+    # Save to cache
+    save_to_cache "$cache_key" "$tags_lookup"
+    
+    echo "$tags_lookup"
+}
+
+# Function to format tags for display
+format_tags() {
+    local tag_ids="$1"
+    local tags_lookup="$2"
+    
+    if [ -z "$tag_ids" ] || [ "$tag_ids" = "null" ] || [ "$tag_ids" = "[]" ]; then
+        echo ""
+        return
+    fi
+    
+    # Parse tag IDs and format them
+    local tag_names=$(echo "$tag_ids" | jq -r --argjson lookup "$tags_lookup" '
+        if type == "array" then
+            map(tostring) | map($lookup[.].name // ("Tag " + .)) | join(", ")
+        else
+            empty
+        end
+    ' 2>/dev/null)
+    
+    if [ -n "$tag_names" ] && [ "$tag_names" != "null" ]; then
+        echo "$tag_names"
+    else
+        echo ""
+    fi
+}
+
+# Function to check if a task matches priority filter
+matches_priority_filter() {
+    local task_priority="$1"
+    local filter="$2"
+    
+    if [ -z "$filter" ]; then
+        return 0  # No filter, matches all
+    fi
+    
+    # Convert to lowercase for case-insensitive comparison
+    local task_priority_lower=$(echo "$task_priority" | tr '[:upper:]' '[:lower:]')
+    local filter_lower=$(echo "$filter" | tr '[:upper:]' '[:lower:]')
+    
+    case "$filter_lower" in
+        "high") [ "$task_priority_lower" = "high" ] ;;
+        "medium") [ "$task_priority_lower" = "medium" ] ;;
+        "low") [ "$task_priority_lower" = "low" ] ;;
+        "normal") [ "$task_priority_lower" = "normal" ] || [ -z "$task_priority" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+# Function to check if a task matches due date filter
+matches_due_filter() {
+    local task_due_date="$1"
+    local filter="$2"
+    
+    if [ -z "$filter" ]; then
+        return 0  # No filter, matches all
+    fi
+    
+    local filter_lower=$(echo "$filter" | tr '[:upper:]' '[:lower:]')
+    local today=$(date "+%Y-%m-%d")
+    
+    case "$filter_lower" in
+        "today")
+            [ "$(echo "$task_due_date" | sed 's/T.*//')" = "$today" ]
+            ;;
+        "overdue")
+            if [ -n "$task_due_date" ] && [ "$task_due_date" != "null" ]; then
+                local due_date_only=$(echo "$task_due_date" | sed 's/T.*//')
+                [ "$due_date_only" \< "$today" ]
+            else
+                return 1
+            fi
+            ;;
+        */*/* | *-*-*)
+            # Date format - try to parse various formats
+            local input_date=""
+            if [[ "$filter" =~ ^[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}$ ]]; then
+                # DD/MM/YY or DD/MM/YYYY format
+                input_date=$(echo "$filter" | awk -F'/' '{
+                    year = $3
+                    if (length(year) == 2) year = "20" year
+                    printf "%04d-%02d-%02d", year, $2, $1
+                }')
+            elif [[ "$filter" =~ ^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}$ ]]; then
+                # YYYY-MM-DD format
+                input_date="$filter"
+            else
+                return 1
+            fi
+            
+            if [ -n "$task_due_date" ] && [ "$task_due_date" != "null" ]; then
+                local due_date_only=$(echo "$task_due_date" | sed 's/T.*//')
+                [ "$due_date_only" = "$input_date" ]
+            else
+                return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Function to check if a task matches start date filter
+matches_start_filter() {
+    local task_start_date="$1"
+    local filter="$2"
+    
+    if [ -z "$filter" ]; then
+        return 0  # No filter, matches all
+    fi
+    
+    local filter_lower=$(echo "$filter" | tr '[:upper:]' '[:lower:]')
+    local today=$(date "+%Y-%m-%d")
+    
+    case "$filter_lower" in
+        "today")
+            [ "$(echo "$task_start_date" | sed 's/T.*//')" = "$today" ]
+            ;;
+        */*/* | *-*-*)
+            # Date format - same logic as due date
+            local input_date=""
+            if [[ "$filter" =~ ^[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}$ ]]; then
+                input_date=$(echo "$filter" | awk -F'/' '{
+                    year = $3
+                    if (length(year) == 2) year = "20" year
+                    printf "%04d-%02d-%02d", year, $2, $1
+                }')
+            elif [[ "$filter" =~ ^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}$ ]]; then
+                input_date="$filter"
+            else
+                return 1
+            fi
+            
+            if [ -n "$task_start_date" ] && [ "$task_start_date" != "null" ]; then
+                local start_date_only=$(echo "$task_start_date" | sed 's/T.*//')
+                [ "$start_date_only" = "$input_date" ]
+            else
+                return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Function to check if a task matches tags filter
+matches_tags_filter() {
+    local task_tag_ids="$1"
+    local tags_lookup="$2"
+    local filter="$3"
+    
+    if [ -z "$filter" ]; then
+        return 0  # No filter, matches all
+    fi
+    
+    if [ -z "$task_tag_ids" ] || [ "$task_tag_ids" = "null" ] || [ "$task_tag_ids" = "[]" ]; then
+        return 1  # Task has no tags
+    fi
+    
+    local filter_lower=$(echo "$filter" | tr '[:upper:]' '[:lower:]')
+    
+    # Get tag names for this task
+    local task_tag_names=$(echo "$task_tag_ids" | jq -r --argjson lookup "$tags_lookup" '
+        if type == "array" then
+            map(tostring) | map($lookup[.].name // "") | join("|")
+        else
+            ""
+        end
+    ' 2>/dev/null)
+    
+    if [ -n "$task_tag_names" ]; then
+        local task_tag_names_lower=$(echo "$task_tag_names" | tr '[:upper:]' '[:lower:]')
+        echo "$task_tag_names_lower" | grep -q "$filter_lower"
+    else
+        return 1
+    fi
+}
+
+# Function to get tasks
+get_tasks() {
+    # Filter parameters
+    local priority_filter=""
+    local due_filter=""
+    local start_filter=""
+    local tags_filter=""
+    local summary_mode=""
+    local debug_mode="false"
+    
+    # Parse flags
+    shift # Remove 'tasks' from arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --priority=*)
+                priority_filter="${1#*=}"
+                shift
+                ;;
+            --due=*)
+                due_filter="${1#*=}"
+                shift
+                ;;
+            --start=*)
+                start_filter="${1#*=}"
+                shift
+                ;;
+            --tags=*)
+                tags_filter="${1#*=}"
+                shift
+                ;;
+            --summary=*)
+                summary_mode="${1#*=}"
+                shift
+                ;;
+            --summary)
+                summary_mode="short"
+                shift
+                ;;
+            --debug)
+                debug_mode="true"
+                shift
+                ;;
+            --help)
+                echo "Use 'tw flags' to see available commands and options."
+                return 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                echo "Use 'tw tasks --help' for usage information."
+                return 1
+                ;;
+        esac
+    done
+    
+    local project_id=$(select_project)
+    if [ $? -ne 0 ] || [ -z "$project_id" ]; then
+        echo "No project selected. Please run 'tw' to select a project first."
+        exit 1
+    fi
+    
+    # Try to load from cache first
+    local cache_key="tasks_${project_id}_${USER_ID}"
+    local cache_file=$(get_cache_file "$cache_key")
+    local show_update_indicator=false
+    
+    if ! is_cache_valid "$cache_file"; then
+        # Cache miss - fetch from API
+        local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+        
+        if [ "$project_id" = "ALL" ]; then
+            echo "Fetching tasks from all projects..."
+            echo
+            
+            # Fetch tasks from all projects using the tasks endpoint with user filter
+            response=$(curl -s -H "$auth_header" \
+                "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500")
+        else
+            echo "Fetching tasks for project $project_id..."
+            echo
+            
+            # Fetch tasks from specific project
+            response=$(curl -s -H "$auth_header" \
+                "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json")
+        fi
+        
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to fetch tasks from Teamwork API"
+            exit 1
+        fi
+        
+        # Check if response contains error
+        local error=$(echo "$response" | jq -r '.error // empty')
+        if [ -n "$error" ]; then
+            echo "API Error: $error"
+            exit 1
+        fi
+        
+        # Save to cache
+        save_to_cache "$cache_key" "$response"
+    else
+        # Cache exists - check if task data is still current
+        if is_task_data_current "$cache_file" "$project_id"; then
+            echo "Loading tasks from cache..."
+            echo
+            show_update_indicator=true
+        else
+            echo "Tasks have been updated - fetching fresh data..."
+            echo
+            # Fetch fresh data since tasks were updated
+            local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+            
+            if [ "$project_id" = "ALL" ]; then
+                # Fetch tasks from all projects
+                response=$(curl -s -H "$auth_header" \
+                    "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500")
+            else
+                # Fetch tasks from specific project
+                response=$(curl -s -H "$auth_header" \
+                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json")
+            fi
+            
+            if [ $? -ne 0 ]; then
+                echo "Error: Failed to fetch tasks from Teamwork API"
+                exit 1
+            fi
+            
+            # Check if response contains error
+            local error=$(echo "$response" | jq -r '.error // empty')
+            if [ -n "$error" ]; then
+                echo "API Error: $error"
+                exit 1
+            fi
+            
+            # Save fresh data to cache
+            save_to_cache "$cache_key" "$response"
+        fi
+        local response=$(cat "$cache_file")
+    fi
+    
+    # Fetch tags if needed (for display or filtering)
+    local tags_lookup="{}"
+    if [ -n "$tags_filter" ]; then
+        tags_lookup=$(fetch_tags "$project_id")
+    fi
+    
+    # Store tasks data for processing
+    local tasks_data=$(echo "$response" | jq -r --arg user_id "$USER_ID" '
+        .tasks[]
+        | select(.assigneeUserIds[]? == ($user_id | tonumber))
+        | {
+            id: .id,
+            name: .name,
+            priority: .priority,
+            dueDate: .dueDate,
+            startDate: .startDate,
+            description: .description,
+            projectId: .projectId,
+            tagIds: .tagIds,
+            updatedAt: .updatedAt
+        }
+    ' | jq -s 'sort_by(.dueDate // "9999-12-31")')
+    
+    # Count total tasks found
+    local task_count=$(echo "$tasks_data" | jq 'length')
+    
+    # Display task summary
+    echo "Found $task_count task(s) assigned to you."
+    echo "Tasks displayed in due date order (overdue first)."
+    echo
+    
+    # Format and display tasks
+    local total_tasks=$(echo "$tasks_data" | jq 'length')
+    local task_counter=0
+    
+    # Process tasks with progress tracking
+    while IFS= read -r task; do
+        task_counter=$((task_counter + 1))
+        local task_id=$(echo "$task" | jq -r '.id')
+        local task_name=$(echo "$task" | jq -r '.name')
+        local due_date=$(echo "$task" | jq -r '.dueDate // "No due date"')
+        local start_date=$(echo "$task" | jq -r '.startDate // "No start date"')
+        local priority=$(echo "$task" | jq -r '.priority // "Normal"')
+        local description=$(echo "$task" | jq -r '.description // ""')
+        local tag_ids=$(echo "$task" | jq -r '.tagIds // "[]"')
+        local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+        local formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
+        local formatted_start=$(echo "$start_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$start_date")
+        
+        # Apply filters - skip task if it doesn't match
+        if ! matches_priority_filter "$priority" "$priority_filter"; then
+            continue
+        fi
+        
+        if ! matches_due_filter "$due_date" "$due_filter"; then
+            continue
+        fi
+        
+        if ! matches_start_filter "$start_date" "$start_filter"; then
+            continue
+        fi
+        
+        if ! matches_tags_filter "$tag_ids" "$tags_lookup" "$tags_filter"; then
+            continue
+        fi
+        
+        # Format tags if needed
+        local formatted_tags=""
+        if [ -n "$tags_filter" ]; then
+            formatted_tags=$(format_tags "$tag_ids" "$tags_lookup")
+        fi
+        
+        # Priority display with emoji
+        local priority_display="$priority"
+        case "$priority" in
+            "high") priority_display="HIGH" ;;
+            "medium") priority_display="MEDIUM" ;;
+            "low") priority_display="LOW" ;;
+            *) priority_display="NORMAL" ;;
+        esac
+        
+        # Build task URL
+        local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+        
+        # Display task in new clean format
+        echo "--- $(format_markdown "$task_name") ---"
+        echo "ID: $task_id  |  Priority: $priority_display  |  Due: $formatted_due"
+        
+        # Show description if it exists
+        if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+            echo "Description: $(format_markdown "$description")"
+        fi
+        
+        echo "URL: $task_url"
+        
+        # Show tags if they exist and were filtered
+        if [ -n "$formatted_tags" ]; then
+            echo "Tags: $formatted_tags"
+        fi
+        
+        # Show AI summary if requested
+        if [ -n "$summary_mode" ]; then
+            # Show progress indicator for AI summary generation
+            show_progress_bar "$task_counter" "$total_tasks"
+            
+            local task_with_comments=$(get_task_with_comments "$task_id")
+            if [ -n "$task_with_comments" ]; then
+                case "$summary_mode" in
+                    "short")
+                        local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                        if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
+                            # Clear progress line and show summary
+                            echo -ne "\r\033[K" >&2
+                            echo "Summary: $ai_summary"
+                        else
+                            echo -ne "\r\033[K" >&2
+                        fi
+                        ;;
+                    "long")
+                        local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                        if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
+                            # Clear progress line and show summary
+                            echo -ne "\r\033[K" >&2
+                            echo "$ai_summary" | sed 's/^//'
+                        else
+                            echo -ne "\r\033[K" >&2
+                        fi
+                        ;;
+                esac
+            else
+                echo -ne "\r\033[K" >&2
+            fi
+        fi
+        
+        echo
+    done <<< "$(echo "$tasks_data" | jq -c '.[]')"
+    
+    # Clear any remaining progress indicator
+    if [ -n "$summary_mode" ] && [ "$total_tasks" -gt 0 ]; then
+        echo -ne "\r\033[K" >&2
+    fi
+}
+
+# Function to find task by title
+find_task_by_title() {
+    local search_title="$1"
+    local project_id=$(select_project)
+    
+    if [ $? -ne 0 ] || [ -z "$project_id" ]; then
+        echo "Error: No project selected. Please run 'tw' to select a project first." >&2
+        return 1
+    fi
+    
+    # Try to load from cache first
+    local cache_key="tasks_${project_id}_${USER_ID}"
+    local cache_file=$(get_cache_file "$cache_key")
+    
+    if ! is_cache_valid "$cache_file"; then
+        echo "Error: No cached task data available. Please run 'tw tasks' first." >&2
+        return 1
+    fi
+    
+    local response=$(cat "$cache_file")
+    
+    # Search for task by title (case insensitive partial match)
+    local search_lower=$(echo "$search_title" | tr '[:upper:]' '[:lower:]')
+    local found_tasks=$(echo "$response" | jq -r --arg user_id "$USER_ID" --arg search "$search_lower" '
+        .tasks[]
+        | select(.assigneeUserIds[]? == ($user_id | tonumber))
+        | select(.name | ascii_downcase | contains($search))
+        | {id: .id, name: .name}
+    ' | jq -s '.')
+    
+    local task_count=$(echo "$found_tasks" | jq 'length')
+    
+    if [ "$task_count" -eq 0 ]; then
+        echo "Error: No tasks found matching '$search_title'" >&2
+        return 1
+    elif [ "$task_count" -eq 1 ]; then
+        echo "$found_tasks" | jq -r '.[0].id'
+        return 0
+    else
+        echo "Error: Multiple tasks found matching '$search_title':" >&2
+        echo "$found_tasks" | jq -r '.[] | "  ID: \(.id) - \(.name)"' >&2
+        echo "Please be more specific or use the task ID directly." >&2
+        return 1
+    fi
+}
+
+# Function to get task URL
+open_task() {
+    local input="$1"
+    shift # Remove first argument, rest will be treated as part of title if needed
+    
+    # Check for flags in remaining arguments and build complete title
+    local remaining_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --*)
+                # Skip flags for open command
+                shift
+                ;;
+            *)
+                remaining_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    if [ -z "$input" ]; then
+        echo "Error: Task ID or title is required"
+        echo "Usage: tw open {ID|Title}"
+        exit 1
+    fi
+    
+    local task_id=""
+    
+    # Check if input is numeric (task ID)
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+        task_id="$input"
+    else
+        # Combine input with remaining args as the task title search
+        local search_title="$input"
+        if [ ${#remaining_args[@]} -gt 0 ]; then
+            search_title="$input ${remaining_args[*]}"
+        fi
+        
+        echo "Searching for task: '$search_title'..."
+        task_id=$(find_task_by_title "$search_title")
+        
+        if [ $? -ne 0 ] || [ -z "$task_id" ]; then
+            exit 1
+        fi
+        
+        echo "Found task ID: $task_id"
+    fi
+    
+    # Build task URL and display
+    local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+    echo "Task URL: $task_url"
+    echo
+    echo "Copy this URL to open the task in your browser."
+}
+
+# Function to get activity/timeline for the user
+get_activity() {
+    echo "Activity feature not yet implemented."
+}
+
+# Function to show help
+show_help() {
+    cat << EOF
+Teamwork CLI (tw) - Command-line interface for Teamwork.com
+
+USAGE:
+    tw                    Interactive project selection wizard
+    tw tasks [options]    List tasks assigned to you  
+    tw open {ID|Title}    Display task URL for manual opening
+    tw summary {ID|Title} Generate detailed AI summary for specific task
+    tw refresh            Clear all cached data
+    tw flags              Show this help message
+
+TASK OPTIONS:
+    --priority=VALUE     Filter by priority (high, medium, low, normal)
+    --due=VALUE          Filter by due date (today, overdue, DD/MM/YYYY, YYYY-MM-DD)
+    --start=VALUE        Filter by start date (today, DD/MM/YYYY, YYYY-MM-DD)  
+    --tags=VALUE         Filter by tag name (case insensitive)
+    --summary            Add short AI summaries to task list
+    --summary=long       Add detailed AI summaries to task list
+    --debug              Show debug information about API data extraction
+
+FEATURES:
+    - Project scope selection with "ALL PROJECTS" option
+    - Smart caching with automatic refresh detection
+    - Task search by title or ID for URL display
+    - Clean terminal output with structured formatting
+    - Full task details including priority, dates, descriptions, and URLs
+    - AI-powered task summaries using Claude (requires claude CLI)
+
+EXAMPLES:
+    tw                              # Select project interactively
+    tw tasks                        # List all tasks
+    tw tasks --summary              # List tasks with short AI summaries
+    tw tasks --summary=long         # List tasks with detailed AI summaries
+    tw tasks --priority=high        # Show only high priority tasks
+    tw tasks --due=today            # Show tasks due today
+    tw tasks --due=overdue          # Show overdue tasks
+    tw summary 123456               # Get detailed AI summary for task
+    tw summary "Fix login bug"      # Get AI summary by task title
+    tw open 123456                  # Get URL for task by ID
+    tw open "Fix login bug"         # Get URL for task by title search
+    tw refresh                      # Clear all cached data
+
+CONFIGURATION:
+    Environment file: ~/.tw.env or ./.env
+    Required variables: TEAMWORK_URL, API_KEY, PASSWORD, USER_ID
+
+EOF
+}
+
+# Function to show detailed summary for a specific task
+show_task_summary() {
+    local input="$1"
+    shift # Remove first argument
+    
+    local task_id=""
+    
+    # Check if input is a number (task ID) or text (task title)
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+        task_id="$input"
+    else
+        # Search for task by title
+        local search_results=$(find_task_by_title "$input")
+        if [ $? -ne 0 ] || [ -z "$search_results" ]; then
+            echo "Error: Task not found with title containing: $input"
+            return 1
+        fi
+        
+        # Extract task ID from search results
+        task_id=$(echo "$search_results" | jq -r '.[0].id' 2>/dev/null)
+        if [ -z "$task_id" ] || [ "$task_id" = "null" ]; then
+            echo "Error: Could not find task with title: $input"
+            return 1
+        fi
+    fi
+    
+    # Fetch task with comments
+    local task_with_comments=$(get_task_with_comments "$task_id")
+    if [ $? -ne 0 ] || [ -z "$task_with_comments" ]; then
+        echo "Error: Could not fetch task details for ID: $task_id"
+        return 1
+    fi
+    
+    # Extract basic task info
+    local task_name=$(echo "$task_with_comments" | jq -r '.task.name // "Unknown Task"')
+    local priority=$(echo "$task_with_comments" | jq -r '.task.priority // "Normal"')
+    local due_date=$(echo "$task_with_comments" | jq -r '.task.dueDate // "Not set"')
+    local updated_at=$(echo "$task_with_comments" | jq -r '.task.updatedAt // ""')
+    
+    # Format due date
+    local formatted_due="$due_date"
+    if [ "$due_date" != "Not set" ] && [ "$due_date" != "null" ]; then
+        formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
+    fi
+    
+    # Format priority display
+    local priority_display="NORMAL"
+    case "$priority" in
+        "high") priority_display="HIGH" ;;
+        "medium") priority_display="MEDIUM" ;;
+        "low") priority_display="LOW" ;;
+        *) priority_display="NORMAL" ;;
+    esac
+    
+    # Display task header
+    echo "--- $(format_markdown "$task_name") ---"
+    echo "ID: $task_id  |  Priority: $priority_display  |  Due: $formatted_due"
+    echo ""
+    
+    # Generate and display long AI summary
+    echo -ne "Generating AI summary..." >&2
+    local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at")
+    echo -ne "\r\033[K" >&2  # Clear the progress line
+    
+    if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
+        echo "$ai_summary"
+    else
+        echo "AI summary unavailable"
+    fi
+}
+
+# Main command dispatcher
+case "${1:-}" in
+    "tasks")
+        get_tasks "$@"
+        ;;
+    "open")
+        if [ -z "$2" ]; then
+            echo "Error: Task ID or title is required"
+            echo "Usage: tw open {ID|Title}"
+            exit 1
+        fi
+        shift # Remove 'open'
+        open_task "$@"
+        ;;
+    "summary")
+        if [ -z "$2" ]; then
+            echo "Error: Task ID or title is required"
+            echo "Usage: tw summary {ID|Title}"
+            exit 1
+        fi
+        shift # Remove 'summary'
+        show_task_summary "$@"
+        ;;
+    "activity")
+        get_activity
+        ;;
+    "refresh")
+        clear_cache
+        ;;
+    "flags"|"help"|"--help")
+        show_help
+        ;;
+    "")
+        # No arguments - run project wizard
+        project_wizard
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Use 'tw flags' to see available commands."
+        exit 1
+        ;;
+esac

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(bash:*)",
+      "Bash(chmod:*)",
+      "Bash(./test_progress.sh:*)",
+      "Bash(rm:*)"
+    ],
+    "deny": []
+  }
+}
