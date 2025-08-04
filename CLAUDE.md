@@ -32,7 +32,10 @@ Required environment variables:
 - `API_KEY` - User's API key
 - `PASSWORD` - User's password
 - `USER_ID` - Numeric user ID
-- `PROJECT_IDS` - Optional fallback project IDs
+
+Optional environment variables:
+- `PROJECT_IDS` - Fallback project IDs
+- `CLAUDE_MODEL` - Claude model for AI summaries (default: claude-3-5-sonnet-20241022)
 
 ### API Endpoints Used
 - `/projects/api/v3/projects.json` - User's projects

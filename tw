@@ -523,7 +523,7 @@ Based on the task title, description, and comments above, provide a concise 1-2 
 Focus on actionable information that helps you understand where things stand and what your next steps should be."
     
     # Generate AI summary
-    local ai_response=$(echo "$prompt" | claude 2>/dev/null)
+    local ai_response=$(echo "$prompt" | claude --model "$CLAUDE_MODEL" 2>/dev/null)
     
     if [ $? -ne 0 ] || [ -z "$ai_response" ]; then
         echo "AI summary unavailable"
@@ -620,7 +620,7 @@ Next Steps:
 Prioritize actionable insights that help you understand your current responsibilities and next actions for this specific task."
     
     # Generate AI summary
-    local ai_response=$(echo "$prompt" | claude 2>/dev/null)
+    local ai_response=$(echo "$prompt" | claude --model "$CLAUDE_MODEL" 2>/dev/null)
     
     if [ $? -ne 0 ] || [ -z "$ai_response" ]; then
         echo "AI summary unavailable"
@@ -651,6 +651,11 @@ fi
 if [ -z "$TEAMWORK_URL" ] || [ -z "$API_KEY" ] || [ -z "$PASSWORD" ] || [ -z "$USER_ID" ]; then
     echo "Error: Missing required environment variables. Check your .env file."
     exit 1
+fi
+
+# Set default Claude model if not specified
+if [ -z "$CLAUDE_MODEL" ]; then
+    CLAUDE_MODEL="claude-3-5-sonnet-20241022"
 fi
 
 # Show welcome message on first run
@@ -2145,6 +2150,7 @@ EXAMPLES:
 CONFIGURATION:
     Environment file: ~/.tw.env or ./.env
     Required variables: TEAMWORK_URL, API_KEY, PASSWORD, USER_ID
+    Optional variables: CLAUDE_MODEL (default: claude-3-5-sonnet-20241022)
 
 EOF
 }
