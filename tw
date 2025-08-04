@@ -303,7 +303,7 @@ is_task_data_current() {
     fi
     
     # Get the most recent updatedAt from cached tasks
-    local cached_updated=$(cat "$cache_file" | jq -r '.tasks | map(.updatedAt) | max')
+    local cached_updated=$(cat "$cache_file" | jq -r '.tasks // [] | map(.updatedAt // empty) | max // empty' 2>/dev/null)
     if [ "$cached_updated" = "null" ] || [ -z "$cached_updated" ]; then
         return 1
     fi
@@ -327,7 +327,7 @@ is_task_data_current() {
     fi
     
     # Get the most recent updatedAt from current data
-    local current_updated=$(echo "$current_response" | jq -r '.tasks | map(.updatedAt) | max' 2>/dev/null)
+    local current_updated=$(echo "$current_response" | jq -r '.tasks // [] | map(.updatedAt // empty) | max // empty' 2>/dev/null)
     if [ "$current_updated" = "null" ] || [ -z "$current_updated" ]; then
         # If we can't get current timestamp, assume cache is valid
         return 0
@@ -339,6 +339,29 @@ is_task_data_current() {
     else
         return 1  # Data is not current
     fi
+}
+
+# Function to format description with proper word wrapping
+format_description_lines() {
+    local description="$1"
+    local max_width="$2"
+    
+    if [ -z "$description" ] || [ "$description" = "null" ] || [ "$description" = "" ]; then
+        return
+    fi
+    
+    # Split description into words and wrap to fit width
+    local first_line=true
+    echo "$description" | fold -s -w "$max_width" | while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            if [ "$first_line" = true ]; then
+                printf "│ Description: %-66s │\n" "$line"
+                first_line=false
+            else
+                printf "│              %-66s │\n" "$line"
+            fi
+        fi
+    done
 }
 
 # Function to show first-time welcome message
@@ -1239,8 +1262,8 @@ fetch_subtasks_simple() {
                     "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/subtasks.json?pageSize=100" 2>/dev/null)
                 
                 if [ $? -eq 0 ] && [ -n "$response" ]; then
-                    # Extract subtasks assigned to user
-                    local subtasks=$(echo "$response" | jq -r --arg user_id "$user_id" --arg level "$level" '
+                    # Extract subtasks assigned to user - filter out problematic descriptions
+                    local subtasks=$(echo "$response" | jq -c --arg user_id "$user_id" --arg level "$level" '
                         .tasks[]?
                         | select(.assigneeUserIds[]? == ($user_id | tonumber))
                         | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
@@ -1250,7 +1273,7 @@ fetch_subtasks_simple() {
                             priority: .priority,
                             dueDate: .dueDate,
                             startDate: .startDate,
-                            description: .description,
+                            description: (.description // "" | gsub("\\\\&"; "&") | gsub("\\n"; " | ") | gsub("\\r"; "") | gsub("\\\\"; "")),
                             projectId: .projectId,
                             tagIds: .tagIds,
                             updatedAt: .updatedAt,
@@ -1479,8 +1502,8 @@ get_tasks() {
             ;;
     esac
     
-    # Get initial tasks
-    local initial_tasks=$(echo "$response" | jq -r --arg user_id "$USER_ID" '
+    # Get initial tasks - output each as compact JSON with cleaned descriptions
+    local initial_tasks=$(echo "$response" | jq -c --arg user_id "$USER_ID" '
         .tasks[]
         | select(.assigneeUserIds[]? == ($user_id | tonumber))
         | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
@@ -1490,7 +1513,7 @@ get_tasks() {
             priority: .priority,
             dueDate: .dueDate,
             startDate: .startDate,
-            description: .description,
+            description: (.description // "" | gsub("\\\\&"; "&") | gsub("\\n"; " | ") | gsub("\\r"; "") | gsub("\\\\"; "")),
             projectId: .projectId,
             tagIds: .tagIds,
             updatedAt: .updatedAt,
@@ -1524,7 +1547,18 @@ get_tasks() {
         # Try to use cached subtasks if tasks haven't been updated
         if [ -f "$subtask_cache_file" ] && is_task_data_current "$subtask_cache_file" "$project_id"; then
             echo "Loading subtasks from cache..." >&2
+            # Load cached subtasks - they should be valid compact JSON
             subtasks=$(cat "$subtask_cache_file")
+            # Validate that the cached data is parseable
+            if ! echo "$subtasks" | jq -e . >/dev/null 2>&1; then
+                # Cache is corrupted, remove it and fetch fresh
+                rm -f "$subtask_cache_file"
+                echo "Cached subtasks corrupted, fetching fresh..." >&2
+                subtasks=$(fetch_subtasks_simple "$task_ids" "$auth_header" "$USER_ID" "$max_subtask_depth")
+                if [ -n "$subtasks" ]; then
+                    echo "$subtasks" > "$subtask_cache_file"
+                fi
+            fi
         else
             # Show progress indicator
             echo "Fetching subtasks (max depth: $max_subtask_depth)..." >&2
@@ -1542,11 +1576,90 @@ get_tasks() {
         local all_tasks="$initial_tasks"
         if [ -n "$subtasks" ]; then
             all_tasks=$(echo -e "$initial_tasks\n$subtasks")
+            # Debug: show that subtasks are being combined
+            if [ "$debug_mode" = "true" ]; then
+                echo "DEBUG: Subtasks found: $(echo "$subtasks" | wc -l) lines" >&2
+                echo "DEBUG: Combined tasks: $(echo "$all_tasks" | wc -l) lines" >&2
+                echo "DEBUG: Task 26293712 in subtasks: $(echo "$subtasks" | grep -c "26293712")" >&2
+                echo "DEBUG: Task 26293712 in all_tasks: $(echo "$all_tasks" | grep -c "26293712")" >&2
+            fi
         fi
         
-        local tasks_data=$(echo "$all_tasks" | jq -s "$sort_expression")
+        # Parse combined tasks and subtasks JSON with error handling
+        local tasks_data=""
+        if [ -n "$all_tasks" ]; then
+            # Filter valid JSON objects and combine them into an array
+            local valid_json=""
+            while IFS= read -r line; do
+                if [ -n "$line" ] && echo "$line" | jq -e . >/dev/null 2>&1; then
+                    valid_json="${valid_json}${line}"$'\n'
+                    # Debug: check if this line contains task 26293712
+                    if [ "$debug_mode" = "true" ] && echo "$line" | grep -q "26293712"; then
+                        echo "DEBUG: Task 26293712 passed validation (valid JSON)" >&2
+                    fi
+                else
+                    # Try to fix the invalid JSON by removing problematic characters
+                    if [ -n "$line" ]; then
+                        # Debug: check if this invalid line contains task 26293712
+                        if [ "$debug_mode" = "true" ] && echo "$line" | grep -q "26293712"; then
+                            echo "DEBUG: Task 26293712 failed JSON validation - attempting fix" >&2
+                            echo "DEBUG: Problematic JSON: $(echo "$line" | head -c 200)..." >&2
+                        fi
+                        
+                        # Remove problematic escape sequences and control characters
+                        local cleaned_line=$(echo "$line" | sed 's/\\n/\\\\n/g' | sed 's/\\&/\&/g')
+                        if echo "$cleaned_line" | jq -e . >/dev/null 2>&1; then
+                            valid_json="${valid_json}${cleaned_line}"$'\n'
+                            if [ "$debug_mode" = "true" ] && echo "$cleaned_line" | grep -q "26293712"; then
+                                echo "DEBUG: Task 26293712 fixed and passed validation" >&2
+                            fi
+                        else
+                            if [ "$debug_mode" = "true" ] && echo "$line" | grep -q "26293712"; then
+                                echo "DEBUG: Task 26293712 could not be fixed - FILTERED OUT" >&2
+                            fi
+                        fi
+                    fi
+                fi
+            done <<< "$all_tasks"
+            
+            if [ -n "$valid_json" ]; then
+                # Deduplicate by task ID before sorting
+                tasks_data=$(echo "$valid_json" | jq -s "map(.) | unique_by(.id) | $sort_expression")
+            else
+                tasks_data="[]"
+            fi
+        else
+            tasks_data="[]"
+        fi
     else
-        local tasks_data=$(echo "$initial_tasks" | jq -s "$sort_expression")
+        # Parse each JSON object individually and combine into array
+        local tasks_data=""
+        if [ -n "$initial_tasks" ]; then
+            # Filter valid JSON objects
+            local valid_json=""
+            while IFS= read -r line; do
+                if [ -n "$line" ] && echo "$line" | jq -e . >/dev/null 2>&1; then
+                    valid_json="${valid_json}${line}"$'\n'
+                else
+                    # Try to fix the invalid JSON
+                    if [ -n "$line" ]; then
+                        local cleaned_line=$(echo "$line" | sed 's/\\n/\\\\n/g' | sed 's/\\&/\&/g')
+                        if echo "$cleaned_line" | jq -e . >/dev/null 2>&1; then
+                            valid_json="${valid_json}${cleaned_line}"$'\n'
+                        fi
+                    fi
+                fi
+            done <<< "$initial_tasks"
+            
+            if [ -n "$valid_json" ]; then
+                # No need to deduplicate initial tasks only, but keep consistent
+                tasks_data=$(echo "$valid_json" | jq -s "map(.) | $sort_expression")
+            else
+                tasks_data="[]"
+            fi
+        else
+            tasks_data="[]"
+        fi
     fi
     
     # Count total tasks found
@@ -1639,7 +1752,7 @@ get_tasks() {
         
         # Show description if it exists
         if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
-            printf "│ Description: %-66s │\n" "$(echo "$description" | cut -c1-66)"
+            format_description_lines "$description" 66
         fi
         
         printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
@@ -2248,7 +2361,7 @@ show_single_task() {
     
     # Show description if it exists
     if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
-        printf "│ Description: %-66s │\n" "$(echo "$description" | cut -c1-66)"
+        format_description_lines "$description" 66
     fi
     
     printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
