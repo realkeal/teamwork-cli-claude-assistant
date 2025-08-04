@@ -1813,37 +1813,50 @@ get_tasks() {
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
         
+        # Check if task is actioned to determine display level
+        local is_actioned=false
+        if [ -n "$task_id" ] && [ -n "$updated_at" ] && is_task_actioned "$task_id" "$updated_at"; then
+            is_actioned=true
+        fi
+        
         # Display task in table format
         printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
         echo "│ $(pad_colored_text "$formatted_title" 79) │"
-        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-        # Show ID, Priority, and Due date on separate lines
-        printf "│ ID: %-75s │\n" "$task_id"
-        printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
-        printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
         
-        # Show description if it exists - start on new line without padding
-        if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+        # For actioned tasks, show only the header (title + status indicators)
+        if [ "$is_actioned" = true ]; then
+            printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
+        else
+            # For non-actioned tasks, show full details
+            printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+            # Show ID, Priority, and Due date on separate lines
+            printf "│ ID: %-75s │\n" "$task_id"
+            printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
+            printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
+            
+            # Show description if it exists - start on new line without padding
+            if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+                printf "│ %-79s │\n" ""
+                printf "│ Description: %-66s │\n" ""
+                # Format description without padding around it
+                echo "$description" | fold -s -w 77 | while IFS= read -r line; do
+                    if [ -n "$line" ]; then
+                        printf "│ %-79s │\n" "$line"
+                    fi
+                done
+            fi
+            
             printf "│ %-79s │\n" ""
-            printf "│ Description: %-66s │\n" ""
-            # Format description without padding around it
-            echo "$description" | fold -s -w 77 | while IFS= read -r line; do
-                if [ -n "$line" ]; then
-                    printf "│ %-79s │\n" "$line"
-                fi
-            done
+            printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
+            
+            # Show tags if they exist and were filtered
+            if [ -n "$formatted_tags" ]; then
+                printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
+            fi
         fi
         
-        printf "│ %-79s │\n" ""
-        printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
-        
-        # Show tags if they exist and were filtered
-        if [ -n "$formatted_tags" ]; then
-            printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
-        fi
-        
-        # Show AI summary if requested
-        if [ -n "$summary_mode" ]; then
+        # Show AI summary if requested (only for non-actioned tasks)
+        if [ -n "$summary_mode" ] && [ "$is_actioned" = false ]; then
             # Show progress indicator for AI summary generation
             show_progress_bar "$task_counter" "$total_tasks"
             
@@ -1884,7 +1897,10 @@ get_tasks() {
             fi
         fi
         
-        printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
+        # Close table for non-actioned tasks (actioned tasks already closed above)
+        if [ "$is_actioned" = false ]; then
+            printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
+        fi
         echo
     done <<< "$(echo "$tasks_data" | jq -c '.[]')"
     
