@@ -1168,6 +1168,7 @@ get_tasks() {
     local summary_mode=""
     local debug_mode="false"
     local order_by="duedate"  # Default ordering
+    local clear_terminal="true"  # Default to clearing terminal
     
     # Parse flags
     shift # Remove 'tasks' from arguments
@@ -1203,6 +1204,10 @@ get_tasks() {
                 ;;
             --debug)
                 debug_mode="true"
+                shift
+                ;;
+            --no-clear)
+                clear_terminal="false"
                 shift
                 ;;
             --help)
@@ -1355,6 +1360,12 @@ get_tasks() {
     
     # Count total tasks found
     local task_count=$(echo "$tasks_data" | jq 'length')
+    
+    # Clear terminal if enabled (default behavior)
+    if [ "$clear_terminal" = "true" ]; then
+        # Full terminal reset: clear screen, scrollback buffer, and reset cursor
+        printf '\033[2J\033[3J\033[H'
+    fi
     
     # Display task summary
     echo "Found $task_count task(s) assigned to you."
@@ -1640,6 +1651,7 @@ TASK OPTIONS (for 'tasks' command):
     --summary            Add short AI summaries to task list
     --summary=long       Add detailed AI summaries to task list
     --debug              Show debug information about API data extraction
+    --no-clear           Skip resetting the terminal before displaying tasks
 
 SINGLE TASK OPTIONS (for 'task' command):
     --summary            Add short AI summary to task display
@@ -1669,6 +1681,7 @@ EXAMPLES:
     tw tasks --due=today            # Show tasks due today
     tw tasks --due=overdue          # Show overdue tasks
     tw tasks --order=start --summary # Show tasks by start date with summaries
+    tw tasks --no-clear             # List tasks without resetting terminal first
     tw task 123456                  # View single task details by ID
     tw task "Fix login bug"         # View single task details by title search
     tw task 123456 --summary        # View single task with short AI summary
