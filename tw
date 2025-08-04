@@ -1573,6 +1573,7 @@ fetch_subtasks_simple() {
                             .tasks[]?
                             | select(.assigneeUserIds[]? == ($user_id | tonumber))
                             | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
+                            | select(.status // "unknown" | test("^(completed|complete|done)$") | not)
                             | {
                                 id: .id,
                                 name: .name,
@@ -1997,10 +1998,12 @@ get_tasks() {
     esac
     
     # Get initial tasks - output each as compact JSON with cleaned descriptions
+    # Apply double-filtering to catch any stale cached completed tasks
     local initial_tasks=$(echo "$response" | jq -c --arg user_id "$USER_ID" '
         .tasks[]
         | select(.assigneeUserIds[]? == ($user_id | tonumber))
         | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
+        | select(.status // "unknown" | test("^(completed|complete|done)$") | not)  # Additional safety check
         | {
             id: .id,
             name: .name,
