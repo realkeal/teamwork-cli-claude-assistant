@@ -282,6 +282,69 @@ calculate_hours_since_creation() {
     echo "$hours_diff"
 }
 
+# Function to determine what type of update occurred to a task
+get_task_update_type() {
+    local task_id="$1"
+    local updated_at="$2"
+    
+    if [ -z "$task_id" ] || [ -z "$updated_at" ] || [ "$updated_at" = "null" ]; then
+        echo "updated"
+        return 0
+    fi
+    
+    # Convert task updatedAt to timestamp for comparison
+    local task_timestamp
+    if [[ "$updated_at" =~ Z$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$updated_at" +%s 2>/dev/null)
+    elif [[ "$updated_at" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${updated_at//:}" +%s 2>/dev/null)
+    else
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$updated_at" +%s 2>/dev/null)
+    fi
+    
+    if [ -z "$task_timestamp" ]; then
+        echo "updated"
+        return 0
+    fi
+    
+    # Fetch recent comments to compare timestamps
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local comments_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=3&orderMode=desc" 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$comments_response" ]; then
+        echo "updated"
+        return 0
+    fi
+    
+    # Get the most recent comment timestamp
+    local latest_comment_time=$(echo "$comments_response" | jq -r '.comments[0].postedDateTime // .comments[0].createdDate // .comments[0].dateCreated // ""' 2>/dev/null)
+    
+    if [ -n "$latest_comment_time" ] && [ "$latest_comment_time" != "null" ]; then
+        # Convert comment timestamp
+        local comment_timestamp
+        if [[ "$latest_comment_time" =~ Z$ ]]; then
+            comment_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$latest_comment_time" +%s 2>/dev/null)
+        elif [[ "$latest_comment_time" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+            comment_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${latest_comment_time//:}" +%s 2>/dev/null)
+        else
+            comment_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$latest_comment_time" +%s 2>/dev/null)
+        fi
+        
+        if [ -n "$comment_timestamp" ]; then
+            # Compare timestamps with 1-minute tolerance (60 seconds)
+            local time_diff=$((task_timestamp - comment_timestamp))
+            if [ "$time_diff" -ge -60 ] && [ "$time_diff" -le 60 ]; then
+                echo "comment added"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Default to task edited if no recent comment found
+    echo "task edited"
+    return 0
+}
+
 # Function to check if a task is new (created within last 3 days)
 is_task_new() {
     local created_at="$1"
@@ -1024,9 +1087,9 @@ build_status_indicators() {
         elif is_recently_updated "$updated_at"; then
             # Only show "Updated" if task is not new
             if [ -n "$status_indicators" ]; then
-                status_indicators="$status_indicators $(format_recently_updated_status "$updated_at")"
+                status_indicators="$status_indicators $(format_recently_updated_status "$task_id" "$updated_at")"
             else
-                status_indicators="$(format_recently_updated_status "$updated_at")"
+                status_indicators="$(format_recently_updated_status "$task_id" "$updated_at")"
             fi
         fi
     fi
@@ -1067,19 +1130,26 @@ format_actioned_status() {
 
 # Function to format recently updated status in yellow and bold with hours ago
 format_recently_updated_status() {
-    local updated_at="$1"
+    local task_id="$1"
+    local updated_at="$2"
     local hours_ago=$(calculate_hours_since_update "$updated_at")
+    
+    # Get the update type (comment added, task edited, etc.)
+    local update_type=$(get_task_update_type "$task_id" "$updated_at")
+    
+    # Capitalize first letter of update type
+    local capitalized_type="$(echo "$update_type" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')"
     
     if [ -n "$hours_ago" ] && [ "$hours_ago" -ge 0 ]; then
         if [ "$hours_ago" -eq 0 ]; then
-            printf '\033[93m• Updated < 1h ago\033[0m'
+            printf '\033[93m• %s < 1h ago\033[0m' "$capitalized_type"
         elif [ "$hours_ago" -eq 1 ]; then
-            printf '\033[93m• Updated 1h ago\033[0m'
+            printf '\033[93m• %s 1h ago\033[0m' "$capitalized_type"
         else
-            printf '\033[93m• Updated %dh ago\033[0m' "$hours_ago"
+            printf '\033[93m• %s %dh ago\033[0m' "$capitalized_type" "$hours_ago"
         fi
     else
-        printf '\033[93m• Recently updated\033[0m'
+        printf '\033[93m• Recently %s\033[0m' "$update_type"
     fi
 }
 
@@ -1090,11 +1160,11 @@ format_new_task_status() {
     
     if [ -n "$hours_ago" ] && [ "$hours_ago" -ge 0 ]; then
         if [ "$hours_ago" -eq 0 ]; then
-            printf '\033[94m• New < 1h ago\033[0m'
+            printf '\033[94m• Created < 1h ago\033[0m'
         elif [ "$hours_ago" -eq 1 ]; then
-            printf '\033[94m• New 1h ago\033[0m'
+            printf '\033[94m• Created 1h ago\033[0m'
         else
-            printf '\033[94m• New %dh ago\033[0m' "$hours_ago"
+            printf '\033[94m• Created %dh ago\033[0m' "$hours_ago"
         fi
     else
         printf '\033[94m• New task\033[0m'
@@ -2453,7 +2523,7 @@ FEATURES:
     - Clean terminal output with structured formatting
     - Full task details including priority, dates, descriptions, and URLs
     - AI-powered task summaries using Claude (requires claude CLI)
-    - Task status indicators: ✔ Actioned (green), • Updated Xh ago (yellow), and • New Xh ago (blue)
+    - Task status indicators: ✔ Actioned (green), • Comment added/Task edited Xh ago (yellow), and • Created Xh ago (blue)
     - Persistent actioned status tracking with automatic invalidation on task updates
 
 EXAMPLES:
