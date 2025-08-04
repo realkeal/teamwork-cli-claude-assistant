@@ -341,6 +341,48 @@ is_task_data_current() {
     fi
 }
 
+# Function to show first-time welcome message
+show_welcome_message() {
+    local welcome_flag_file="$CACHE_DIR/.tw_welcome_shown"
+    
+    # Check if welcome message has already been shown
+    if [ -f "$welcome_flag_file" ]; then
+        return 0  # Already shown, skip
+    fi
+    
+    # Display welcome message in green box
+    echo -e "\033[32m"  # Set green color
+    cat << 'EOF'
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                 │
+│                          🎉 Welcome to Teamwork CLI! 🎉                        │
+│                                                                                 │
+│   Thank you for using the Teamwork.com command-line interface. This tool       │
+│   helps you manage your tasks, projects, and workflow directly from your       │
+│   terminal with powerful features like AI summaries and smart filtering.       │
+│                                                                                 │
+│   Created by: Anthony Keal                                                      │
+│   Email: contact@business.anthonykeal.com.au                                    │
+│                                                                                 │
+│   💝 If you find this tool helpful, consider supporting development:           │
+│   Buy Me a Coffee: https://buymeacoffee.com/anthonykeal                        │
+│                                                                                 │
+│   Get started by running 'tw flags' to see all available commands!             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+EOF
+    echo -e "\033[0m"  # Reset color
+    echo
+    
+    # Create flag file to mark welcome message as shown
+    touch "$welcome_flag_file"
+    
+    # Pause briefly to let user read the message
+    echo "Press any key to continue..."
+    read -n 1 -s
+    echo
+}
+
 # Function to check if Claude CLI is available
 check_claude_available() {
     if ! command -v claude &> /dev/null; then
@@ -587,6 +629,9 @@ if [ -z "$TEAMWORK_URL" ] || [ -z "$API_KEY" ] || [ -z "$PASSWORD" ] || [ -z "$U
     echo "Error: Missing required environment variables. Check your .env file."
     exit 1
 fi
+
+# Show welcome message on first run
+show_welcome_message
 
 # Function to fetch all projects user is assigned to
 fetch_assigned_projects() {
