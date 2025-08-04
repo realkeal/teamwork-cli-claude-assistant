@@ -89,6 +89,139 @@ clear_cache() {
     echo "Cache cleared successfully."
 }
 
+# Function to mark a task as actioned
+mark_task_actioned() {
+    local task_id="$1"
+    
+    if [ -z "$task_id" ]; then
+        echo "Error: Task ID is required"
+        echo "Usage: tw action {task_id}"
+        return 1
+    fi
+    
+    # Validate task ID is numeric
+    if ! [[ "$task_id" =~ ^[0-9]+$ ]]; then
+        echo "Error: Task ID must be numeric"
+        return 1
+    fi
+    
+    # First, fetch the current task to get its updatedAt timestamp
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local task_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id.json" 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$task_response" ]; then
+        echo "Error: Failed to fetch task $task_id from Teamwork API"
+        return 1
+    fi
+    
+    # Check if response contains error
+    local error=$(echo "$task_response" | jq -r '.error // empty')
+    if [ -n "$error" ]; then
+        echo "API Error: $error"
+        return 1
+    fi
+    
+    # Extract task details
+    local task_name=$(echo "$task_response" | jq -r '.task.name // "Unknown Task"')
+    local updated_at=$(echo "$task_response" | jq -r '.task.updatedAt // ""')
+    
+    if [ -z "$updated_at" ] || [ "$updated_at" = "null" ]; then
+        echo "Error: Could not get task update timestamp"
+        return 1
+    fi
+    
+    # Save actioned status with timestamp
+    local actioned_file="$CACHE_DIR/actioned_${task_id}.json"
+    local actioned_data=$(jq -n --arg task_id "$task_id" --arg updated_at "$updated_at" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{
+        taskId: $task_id,
+        actionedAt: $timestamp,
+        lastUpdatedAt: $updated_at
+    }')
+    
+    echo "$actioned_data" > "$actioned_file"
+    echo "Task $task_id marked as actioned: $task_name"
+}
+
+# Function to check if a task is marked as actioned and still valid
+is_task_actioned() {
+    local task_id="$1"
+    local current_updated_at="$2"
+    
+    local actioned_file="$CACHE_DIR/actioned_${task_id}.json"
+    
+    if [ ! -f "$actioned_file" ]; then
+        return 1  # Not actioned
+    fi
+    
+    # Read the stored actioned data
+    local stored_updated_at=$(cat "$actioned_file" | jq -r '.lastUpdatedAt // ""')
+    
+    # If current_updated_at is different from stored, the actioned status is invalid
+    if [ "$current_updated_at" != "$stored_updated_at" ]; then
+        # Remove the outdated actioned file
+        rm "$actioned_file"
+        return 1  # No longer valid
+    fi
+    
+    return 0  # Still actioned and valid
+}
+
+# Function to remove actioned status for a task
+unmark_task_actioned() {
+    local task_id="$1"
+    
+    if [ -z "$task_id" ]; then
+        echo "Error: Task ID is required"
+        echo "Usage: tw unaction {task_id}"
+        return 1
+    fi
+    
+    # Validate task ID is numeric
+    if ! [[ "$task_id" =~ ^[0-9]+$ ]]; then
+        echo "Error: Task ID must be numeric"
+        return 1
+    fi
+    
+    local actioned_file="$CACHE_DIR/actioned_${task_id}.json"
+    
+    if [ -f "$actioned_file" ]; then
+        rm "$actioned_file"
+        echo "Actioned status removed from task $task_id"
+    else
+        echo "Task $task_id was not marked as actioned"
+    fi
+}
+
+# Function to check if a task was recently updated (within last 3 days)
+is_recently_updated() {
+    local updated_at="$1"
+    
+    if [ -z "$updated_at" ] || [ "$updated_at" = "null" ]; then
+        return 1
+    fi
+    
+    # Get current timestamp and 3 days ago timestamp
+    local current_timestamp=$(date +%s)
+    local three_days_ago=$((current_timestamp - 259200))  # 3 days = 3 * 24 * 60 * 60 seconds
+    
+    # Convert updatedAt to timestamp (handle different formats)
+    local task_timestamp
+    if [[ "$updated_at" =~ Z$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$updated_at" +%s 2>/dev/null)
+    elif [[ "$updated_at" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${updated_at//:}" +%s 2>/dev/null)
+    else
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$updated_at" +%s 2>/dev/null)
+    fi
+    
+    if [ -z "$task_timestamp" ]; then
+        return 1  # Could not parse timestamp
+    fi
+    
+    # Check if task was updated within last 3 days
+    [ "$task_timestamp" -gt "$three_days_ago" ]
+}
+
 # Function to clear cache for a specific task
 clear_task_cache() {
     local task_id="$1"
@@ -143,6 +276,14 @@ clear_task_cache() {
             echo "Removed task list metadata: $(basename "$cache_file")"
         fi
     done
+    
+    # Remove actioned status file for this specific task
+    local actioned_file="$CACHE_DIR/actioned_${task_id}.json"
+    if [ -f "$actioned_file" ]; then
+        rm "$actioned_file"
+        files_removed=$((files_removed + 1))
+        echo "Removed actioned status: $(basename "$actioned_file")"
+    fi
     
     if [ $files_removed -eq 0 ]; then
         echo "No cache files found for task ID: $task_id"
@@ -656,11 +797,43 @@ format_due_date() {
     fi
 }
 
-# Function to format task titles in bold
+# Function to format task titles in bold with status indicators
 format_task_title() {
     local title="$1"
-    # Bold formatting for titles
-    printf '\033[1m>> %s <<\033[0m' "$title"
+    local task_id="$2"
+    local updated_at="$3"
+    
+    # Build status indicators
+    local status_indicators=""
+    if [ -n "$task_id" ] && [ -n "$updated_at" ]; then
+        if is_task_actioned "$task_id" "$updated_at"; then
+            status_indicators="$(format_actioned_status)"
+        fi
+        if is_recently_updated "$updated_at"; then
+            if [ -n "$status_indicators" ]; then
+                status_indicators="$status_indicators $(format_recently_updated_status)"
+            else
+                status_indicators="$(format_recently_updated_status)"
+            fi
+        fi
+    fi
+    
+    # Format title with status indicators
+    if [ -n "$status_indicators" ]; then
+        printf '\033[1m>> %s <<\033[0m %s' "$title" "$status_indicators"
+    else
+        printf '\033[1m>> %s <<\033[0m' "$title"
+    fi
+}
+
+# Function to format actioned status in green and bold
+format_actioned_status() {
+    printf '\033[32m\033[1m[ACTIONED]\033[0m'
+}
+
+# Function to format recently updated status in yellow and bold
+format_recently_updated_status() {
+    printf '\033[33m\033[1m[RECENTLY UPDATED]\033[0m'
 }
 
 # Function to strip ANSI color codes for width calculation
@@ -1244,8 +1417,8 @@ get_tasks() {
         # Format due date with overdue check
         local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
         
-        # Format task title in bold
-        local formatted_title=$(format_task_title "$task_name")
+        # Format task title in bold with status indicators
+        local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at")
         
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
@@ -1452,6 +1625,8 @@ USAGE:
     tw task {ID|Title}      View single task details with optional AI summary
     tw open {ID|Title}      Open task in browser automatically
     tw summary {ID|Title}   Generate detailed AI summary for specific task
+    tw action {ID}          Mark task as actioned (shows green [ACTIONED] status)
+    tw unaction {ID}        Remove actioned status from task
     tw refresh              Clear all cached data
     tw refresh {ID}         Clear cache for specific task only
     tw flags                Show this help message
@@ -1480,6 +1655,8 @@ FEATURES:
     - Clean terminal output with structured formatting
     - Full task details including priority, dates, descriptions, and URLs
     - AI-powered task summaries using Claude (requires claude CLI)
+    - Task status indicators: [ACTIONED] (green) and [RECENTLY UPDATED] (yellow)
+    - Persistent actioned status tracking with automatic invalidation on task updates
 
 EXAMPLES:
     tw                              # Select project interactively
@@ -1502,6 +1679,8 @@ EXAMPLES:
     tw summary "Fix login bug"      # Get AI summary by task title
     tw open 123456                  # Open task in browser by ID
     tw open "Fix login bug"         # Open task in browser by title search
+    tw action 123456                # Mark task as actioned
+    tw unaction 123456              # Remove actioned status
     tw refresh                      # Clear all cached data
     tw refresh 123456               # Clear cache for specific task only
 
@@ -1838,8 +2017,8 @@ show_single_task() {
     # Format due date with overdue check
     local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
     
-    # Format task title in bold
-    local formatted_title=$(format_task_title "$task_name")
+    # Format task title in bold with status indicators
+    local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at")
     
     # Build task URL
     local task_url="$TEAMWORK_URL/app/tasks/$task_id"
@@ -1972,8 +2151,8 @@ show_task_summary() {
     # Format due date with overdue check
     local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
     
-    # Format task title in bold
-    local formatted_title=$(format_task_title "$task_name")
+    # Format task title in bold with status indicators
+    local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at")
     
     # Display task header in table format
     printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
@@ -2036,6 +2215,24 @@ case "${1:-}" in
         ;;
     "activity")
         get_activity
+        ;;
+    "action")
+        if [ -z "$2" ]; then
+            echo "Error: Task ID is required"
+            echo "Usage: tw action {task_id}"
+            exit 1
+        fi
+        shift # Remove 'action'
+        mark_task_actioned "$1"
+        ;;
+    "unaction")
+        if [ -z "$2" ]; then
+            echo "Error: Task ID is required"
+            echo "Usage: tw unaction {task_id}"
+            exit 1
+        fi
+        shift # Remove 'unaction'
+        unmark_task_actioned "$1"
         ;;
     "refresh")
         if [ -n "$2" ]; then
