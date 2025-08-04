@@ -1749,12 +1749,46 @@ get_tasks() {
     echo "Tasks displayed in $order_description."
     echo
     
-    # Format and display tasks
-    local total_tasks=$(echo "$tasks_data" | jq 'length')
+    # Separate actioned and non-actioned tasks
+    local actioned_tasks=""
+    local regular_tasks=""
+    
+    # First pass: separate actioned tasks from regular tasks
+    while IFS= read -r task; do
+        local task_id=$(echo "$task" | jq -r '.id')
+        local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+        
+        if [ -n "$task_id" ] && [ -n "$updated_at" ] && is_task_actioned "$task_id" "$updated_at"; then
+            actioned_tasks="${actioned_tasks}${task}"$'\n'
+        else
+            regular_tasks="${regular_tasks}${task}"$'\n'
+        fi
+    done <<< "$(echo "$tasks_data" | jq -c '.[]')"
+    
+    # Display actioned tasks first as headers
+    if [ -n "$actioned_tasks" ]; then
+        while IFS= read -r task; do
+            [ -z "$task" ] && continue
+            
+            local task_id=$(echo "$task" | jq -r '.id')
+            local task_name=$(echo "$task" | jq -r '.name')
+            local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+            
+            # Display actioned task as a simple header with grey title and green status
+            echo -e "\033[90m${task_name}\033[0m \033[32m• Actioned\033[0m"
+        done <<< "$actioned_tasks"
+        
+        # Add spacing after actioned tasks if there are any
+        echo
+    fi
+    
+    # Format and display regular tasks
+    local total_tasks=$(echo "$regular_tasks" | grep -c '^{')
     local task_counter=0
     
-    # Process tasks with progress tracking
+    # Process regular tasks with progress tracking
     while IFS= read -r task; do
+        [ -z "$task" ] && continue
         task_counter=$((task_counter + 1))
         local task_id=$(echo "$task" | jq -r '.id')
         local task_name=$(echo "$task" | jq -r '.name')
@@ -1807,28 +1841,18 @@ get_tasks() {
         # Format due date with overdue check
         local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
         
-        # Format task title in bold with status indicators
+        # Format task title in bold with status indicators (but not actioned status since these are regular tasks)
         local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at" "$task_level")
         
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
         
-        # Check if task is actioned to determine display level
-        local is_actioned=false
-        if [ -n "$task_id" ] && [ -n "$updated_at" ] && is_task_actioned "$task_id" "$updated_at"; then
-            is_actioned=true
-        fi
-        
         # Display task in table format
         printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
         echo "│ $(pad_colored_text "$formatted_title" 79) │"
         
-        # For actioned tasks, show only the header (title + status indicators)
-        if [ "$is_actioned" = true ]; then
-            printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
-        else
-            # For non-actioned tasks, show full details
-            printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+        # Show full details for all regular tasks
+        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
             # Show ID, Priority, and Due date on separate lines
             printf "│ ID: %-75s │\n" "$task_id"
             printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
@@ -1853,10 +1877,9 @@ get_tasks() {
             if [ -n "$formatted_tags" ]; then
                 printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
             fi
-        fi
         
-        # Show AI summary if requested (only for non-actioned tasks)
-        if [ -n "$summary_mode" ] && [ "$is_actioned" = false ]; then
+        # Show AI summary if requested
+        if [ -n "$summary_mode" ]; then
             # Show progress indicator for AI summary generation
             show_progress_bar "$task_counter" "$total_tasks"
             
@@ -1897,12 +1920,10 @@ get_tasks() {
             fi
         fi
         
-        # Close table for non-actioned tasks (actioned tasks already closed above)
-        if [ "$is_actioned" = false ]; then
-            printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
-        fi
+        # Close table for all regular tasks
+        printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
         echo
-    done <<< "$(echo "$tasks_data" | jq -c '.[]')"
+    done <<< "$regular_tasks"
     
     # Clear any remaining progress indicator
     if [ -n "$summary_mode" ] && [ "$total_tasks" -gt 0 ]; then
