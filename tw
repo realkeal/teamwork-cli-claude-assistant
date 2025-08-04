@@ -610,7 +610,7 @@ Analyze the task title, description, and comments above to understand:
 
 Format your response exactly as:
 
-SUMMARY: [2-3 sentences about the current status and progress based on analyzing the title, description, and comments. Focus on what you need to know about where things stand.]
+AI SUMMARY: [2-3 sentences about the current status and progress based on analyzing the title, description, and comments. Focus on what you need to know about where things stand.]
 
 NEXT STEPS:
 - [specific action you should take based on the task context]
@@ -839,7 +839,7 @@ format_priority() {
     case "$priority" in
         "HIGH") 
             # Red color AND bold for HIGH priority - use printf for better compatibility
-            printf '\033[31m\033[1m*** Priority: HIGH ***\033[0m'
+            printf '\033[31m\033[1mPriority: HIGH\033[0m'
             ;;
         *) echo "Priority: $priority" ;;
     esac
@@ -900,9 +900,9 @@ format_task_title() {
     
     # Format title with status indicators and indentation
     if [ -n "$status_indicators" ]; then
-        printf '%s\033[1m>> %s <<\033[0m %s' "$indent" "$title" "$status_indicators"
+        printf '%s\033[1m%s\033[0m %s' "$indent" "$title" "$status_indicators"
     else
-        printf '%s\033[1m>> %s <<\033[0m' "$indent" "$title"
+        printf '%s\033[1m%s\033[0m' "$indent" "$title"
     fi
 }
 
@@ -940,39 +940,53 @@ pad_colored_text() {
 wrap_text_for_table() {
     local text="$1"
     local remaining_text="$text"
+    local stripped_text=$(strip_colors "$text")
     
-    while [ ${#remaining_text} -gt 79 ]; do
-        local chunk="${remaining_text:0:79}"
-        
-        # Try to break at word boundary by finding the last space within the chunk
-        local break_pos=79
-        
-        # Look for the last space character within reasonable distance from the end
-        for ((pos=79; pos>=60; pos--)); do
-            if [ "${remaining_text:$((pos-1)):1}" = " " ]; then
-                break_pos=$pos
-                break
-            fi
-        done
-        
-        # Extract the chunk and update remaining content
-        chunk="${remaining_text:0:$break_pos}"
-        
-        # Skip the space if we broke at a word boundary
-        if [ "${remaining_text:$((break_pos-1)):1}" = " " ]; then
-            remaining_text="${remaining_text:$break_pos}"
+    # If text fits in one line, just display it with proper padding
+    if [ ${#stripped_text} -le 79 ]; then
+        printf "│ %s │\n" "$(pad_colored_text "$text" 79)"
+        return
+    fi
+    
+    # For longer text, we need to be more careful about wrapping
+    # Split by words and build lines that fit
+    local words=($stripped_text)  # Split into words array
+    local current_line=""
+    local current_line_colored=""
+    
+    for word in "${words[@]}"; do
+        local test_line="$current_line"
+        if [ -n "$current_line" ]; then
+            test_line="$current_line $word"
         else
-            remaining_text="${remaining_text:$break_pos}"
+            test_line="$word"
         fi
         
-        # Trim trailing spaces from chunk
-        chunk="${chunk%"${chunk##*[![:space:]]}"}"
-        printf "│ %-79s │\n" "$chunk"
+        # If adding this word would exceed 79 characters, output current line
+        if [ ${#test_line} -gt 79 ]; then
+            if [ -n "$current_line" ]; then
+                printf "│ %s │\n" "$(pad_colored_text "$current_line_colored" 79)"
+                current_line="$word"
+                current_line_colored="$word"  # For now, simplified without color preservation
+            else
+                # Single word is too long, just truncate it
+                printf "│ %s │\n" "$(pad_colored_text "${word:0:79}" 79)"
+                current_line=""
+                current_line_colored=""
+            fi
+        else
+            current_line="$test_line"
+            if [ -n "$current_line_colored" ]; then
+                current_line_colored="$current_line_colored $word"
+            else
+                current_line_colored="$word"
+            fi
+        fi
     done
     
-    # Display remaining text
-    if [ -n "$remaining_text" ]; then
-        printf "│ %-79s │\n" "$remaining_text"
+    # Output any remaining text
+    if [ -n "$current_line" ]; then
+        printf "│ %s │\n" "$(pad_colored_text "$current_line_colored" 79)"
     fi
 }
 
@@ -992,10 +1006,13 @@ format_long_summary() {
     
     echo "$ai_summary" | while IFS= read -r line; do
         # Check if this line starts a new section
-        if [[ "$line" =~ ^(SUMMARY|NEXT STEPS): ]]; then
+        if [[ "$line" =~ ^(AI SUMMARY|NEXT STEPS): ]]; then
             # Add separator before new sections (except the very first one)
             if [ "$first_line" != "true" ]; then
                 printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+            else
+                # Add blank line before first AI SUMMARY section
+                printf "│ %-79s │\n" ""
             fi
             first_line=false
             
@@ -1009,7 +1026,33 @@ format_long_summary() {
         
         # Format the line content
         if [ -n "$line" ]; then
-            wrap_text_for_table "$line"
+            # Apply pink color to AI SUMMARY and NEXT STEPS headings
+            if [[ "$line" =~ ^(AI SUMMARY|NEXT STEPS): ]]; then
+                # Split the line to separate title from content
+                if [[ "$line" =~ ^(AI\ SUMMARY|NEXT\ STEPS):(.*) ]]; then
+                    local title="${BASH_REMATCH[1]}:"
+                    local content="${BASH_REMATCH[2]}"
+                    # Apply pink color only to the title
+                    echo -e "│ \033[95m$title\033[0m$(printf "%-$((79 - ${#title}))s" "") │"
+                    # Handle content separately with proper wrapping if it exists
+                    if [ -n "$content" ] && [ "$content" != " " ]; then
+                        # Trim leading space and wrap content properly
+                        content="${content# }"
+                        if [ -n "$content" ]; then
+                            wrap_text_for_table "$content"
+                        fi
+                    fi
+                else
+                    # Fallback - just the title with pink color
+                    echo -e "│ \033[95m$line\033[0m$(printf "%-$((79 - ${#line}))s" "") │"
+                fi
+            else
+                wrap_text_for_table "$line"
+            fi
+            # Add break space below list items in NEXT STEPS section
+            if [ "$in_next_steps" = "true" ] && [[ "$line" =~ ^[[:space:]]*- ]]; then
+                printf "│ %-79s │\n" ""
+            fi
         else
             # Empty lines become separator lines
             printf "│ %-79s │\n" ""
@@ -1746,15 +1789,17 @@ get_tasks() {
         printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
         # Format with proper padding for colored text
         local id_part="ID: $task_id"
-        local priority_padded=$(pad_colored_text "$formatted_priority" 20)
+        local priority_padded=$(pad_colored_text "$formatted_priority" 18)
         local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
         echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
         
         # Show description if it exists
         if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+            printf "│ %-79s │\n" ""
             format_description_lines "$description" 66
         fi
         
+        printf "│ %-79s │\n" ""
         printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
         
         # Show tags if they exist and were filtered
@@ -1775,7 +1820,9 @@ get_tasks() {
                         if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                             # Clear progress line and show summary
                             echo -ne "\r\033[K" >&2
-                            printf "│ %-79s │\n" "Summary:"
+                            printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+                            printf "│ %-79s │\n" ""
+                            echo -e "│ \033[95mAI SUMMARY:\033[0m$(printf "%-66s" "") │"
                             wrap_text_for_table "$ai_summary"
                         else
                             echo -ne "\r\033[K" >&2
@@ -2350,7 +2397,7 @@ show_single_task() {
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
     # Format with proper padding for colored text
     local id_part="ID: $task_id"
-    local priority_padded=$(pad_colored_text "$formatted_priority" 20)
+    local priority_padded=$(pad_colored_text "$formatted_priority" 18)
     local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
     echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
     
@@ -2361,9 +2408,11 @@ show_single_task() {
     
     # Show description if it exists
     if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+        printf "│ %-79s │\n" ""
         format_description_lines "$description" 66
     fi
     
+    printf "│ %-79s │\n" ""
     printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
     
     # Show tags if they exist
@@ -2381,7 +2430,9 @@ show_single_task() {
                     local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
                     echo -ne "\r\033[K" >&2
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                        printf "│ %-79s │\n" "Summary:"
+                        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+                        printf "│ %-79s │\n" ""
+                        echo -e "│ \033[95mAI SUMMARY:\033[0m$(printf "%-66s" "") │"
                         wrap_text_for_table "$ai_summary"
                     fi
                     ;;
@@ -2481,7 +2532,7 @@ show_task_summary() {
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
     # Format with proper padding for colored text
     local id_part="ID: $task_id"
-    local priority_padded=$(pad_colored_text "$formatted_priority" 20)
+    local priority_padded=$(pad_colored_text "$formatted_priority" 18)
     local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
     echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
@@ -2492,9 +2543,7 @@ show_task_summary() {
     echo -ne "\r\033[K" >&2  # Clear the progress line
     
     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-        echo "$ai_summary" | while IFS= read -r line; do
-            printf "│ %-79s │\n" "$(echo "$line" | cut -c1-79)"
-        done
+        format_long_summary "$ai_summary" "false"
     else
         printf "│ %-79s │\n" "AI summary unavailable"
     fi
