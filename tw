@@ -89,6 +89,68 @@ clear_cache() {
     echo "Cache cleared successfully."
 }
 
+# Function to clear cache for a specific task
+clear_task_cache() {
+    local task_id="$1"
+    
+    if [ -z "$task_id" ]; then
+        echo "Error: Task ID is required"
+        echo "Usage: tw refresh {task_id}"
+        return 1
+    fi
+    
+    # Validate task ID is numeric
+    if ! [[ "$task_id" =~ ^[0-9]+$ ]]; then
+        echo "Error: Task ID must be numeric"
+        return 1
+    fi
+    
+    local files_removed=0
+    
+    # Remove AI summary caches for this task (both short and long)
+    for cache_file in "$CACHE_DIR"/ai_*_${task_id}_*.json; do
+        if [ -f "$cache_file" ]; then
+            rm "$cache_file"
+            files_removed=$((files_removed + 1))
+            echo "Removed AI summary cache: $(basename "$cache_file")"
+        fi
+    done
+    
+    # Remove AI summary metadata files
+    for cache_file in "$CACHE_DIR"/ai_*_${task_id}_*.json.meta; do
+        if [ -f "$cache_file" ]; then
+            rm "$cache_file"
+            files_removed=$((files_removed + 1))
+            echo "Removed AI summary metadata: $(basename "$cache_file")"
+        fi
+    done
+    
+    # Remove task list caches (since they contain the task data that might be stale)
+    # This ensures the task data is refreshed when viewing task lists
+    for cache_file in "$CACHE_DIR"/tasks_*_*.json; do
+        if [ -f "$cache_file" ]; then
+            rm "$cache_file"
+            files_removed=$((files_removed + 1))
+            echo "Removed task list cache: $(basename "$cache_file")"
+        fi
+    done
+    
+    # Remove task list metadata files
+    for cache_file in "$CACHE_DIR"/tasks_*_*.json.meta; do
+        if [ -f "$cache_file" ]; then
+            rm "$cache_file"
+            files_removed=$((files_removed + 1))
+            echo "Removed task list metadata: $(basename "$cache_file")"
+        fi
+    done
+    
+    if [ $files_removed -eq 0 ]; then
+        echo "No cache files found for task ID: $task_id"
+    else
+        echo "Cache cleared for task $task_id ($files_removed files removed)."
+    fi
+}
+
 # Function to check if cached task data is still current by comparing updatedAt timestamps
 is_task_data_current() {
     local cache_file="$1"
@@ -178,8 +240,8 @@ get_task_with_comments() {
         return 1
     fi
     
-    # Fetch latest 5 comments - clean control characters
-    local comments_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=5" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
+    # Fetch latest 5 comments in descending order (most recent first) - clean control characters
+    local comments_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=5&orderMode=desc" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
     
     # Combine task and comments data
     local combined_data=$(jq -n \
@@ -619,6 +681,87 @@ pad_colored_text() {
     else
         echo "$text"
     fi
+}
+
+# Function to wrap text for table display (79 characters per line)
+wrap_text_for_table() {
+    local text="$1"
+    local remaining_text="$text"
+    
+    while [ ${#remaining_text} -gt 79 ]; do
+        local chunk="${remaining_text:0:79}"
+        
+        # Try to break at word boundary by finding the last space within the chunk
+        local break_pos=79
+        
+        # Look for the last space character within reasonable distance from the end
+        for ((pos=79; pos>=60; pos--)); do
+            if [ "${remaining_text:$((pos-1)):1}" = " " ]; then
+                break_pos=$pos
+                break
+            fi
+        done
+        
+        # Extract the chunk and update remaining content
+        chunk="${remaining_text:0:$break_pos}"
+        
+        # Skip the space if we broke at a word boundary
+        if [ "${remaining_text:$((break_pos-1)):1}" = " " ]; then
+            remaining_text="${remaining_text:$break_pos}"
+        else
+            remaining_text="${remaining_text:$break_pos}"
+        fi
+        
+        # Trim trailing spaces from chunk
+        chunk="${chunk%"${chunk##*[![:space:]]}"}"
+        printf "│ %-79s │\n" "$chunk"
+    done
+    
+    # Display remaining text
+    if [ -n "$remaining_text" ]; then
+        printf "│ %-79s │\n" "$remaining_text"
+    fi
+}
+
+# Function to format long summary with proper section separation
+format_long_summary() {
+    local ai_summary="$1"
+    local has_tags="$2"
+    
+    # Add separator before summary if there are tags displayed
+    if [ "$has_tags" = "true" ]; then
+        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+    fi
+    
+    # Process the AI summary line by line with section formatting
+    local in_next_steps=false
+    local first_line=true
+    
+    echo "$ai_summary" | while IFS= read -r line; do
+        # Check if this line starts a new section
+        if [[ "$line" =~ ^(SUMMARY|NEXT STEPS): ]]; then
+            # Add separator before new sections (except the very first one)
+            if [ "$first_line" != "true" ]; then
+                printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+            fi
+            first_line=false
+            
+            # Check if we're entering the NEXT STEPS section
+            if [[ "$line" =~ ^NEXT\ STEPS: ]]; then
+                in_next_steps=true
+            else
+                in_next_steps=false
+            fi
+        fi
+        
+        # Format the line content
+        if [ -n "$line" ]; then
+            wrap_text_for_table "$line"
+        else
+            # Empty lines become separator lines
+            printf "│ %-79s │\n" ""
+        fi
+    done
 }
 
 # Function to fetch tags for the project and create a lookup map
@@ -1143,7 +1286,7 @@ get_tasks() {
                             # Clear progress line and show summary
                             echo -ne "\r\033[K" >&2
                             printf "│ %-79s │\n" "Summary:"
-                            printf "│ %-79s │\n" "$(echo "$ai_summary" | cut -c1-79)"
+                            wrap_text_for_table "$ai_summary"
                         else
                             echo -ne "\r\033[K" >&2
                         fi
@@ -1153,10 +1296,12 @@ get_tasks() {
                         if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                             # Clear progress line and show summary
                             echo -ne "\r\033[K" >&2
-                            printf "│ %-79s │\n" "Summary:"
-                            echo "$ai_summary" | while IFS= read -r line; do
-                                printf "│ %-79s │\n" "$(echo "$line" | cut -c1-79)"
-                            done
+                            # Check if tags were displayed to determine separator placement
+                            local has_tags="false"
+                            if [ -n "$formatted_tags" ]; then
+                                has_tags="true"
+                            fi
+                            format_long_summary "$ai_summary" "$has_tags"
                         else
                             echo -ne "\r\033[K" >&2
                         fi
@@ -1308,6 +1453,7 @@ USAGE:
     tw open {ID|Title}      Open task in browser automatically
     tw summary {ID|Title}   Generate detailed AI summary for specific task
     tw refresh              Clear all cached data
+    tw refresh {ID}         Clear cache for specific task only
     tw flags                Show this help message
 
 TASK OPTIONS (for 'tasks' command):
@@ -1357,6 +1503,7 @@ EXAMPLES:
     tw open 123456                  # Open task in browser by ID
     tw open "Fix login bug"         # Open task in browser by title search
     tw refresh                      # Clear all cached data
+    tw refresh 123456               # Clear cache for specific task only
 
 CONFIGURATION:
     Environment file: ~/.tw.env or ./.env
@@ -1735,7 +1882,7 @@ show_single_task() {
                     echo -ne "\r\033[K" >&2
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                         printf "│ %-79s │\n" "Summary:"
-                        printf "│ %-79s │\n" "$(echo "$ai_summary" | cut -c1-79)"
+                        wrap_text_for_table "$ai_summary"
                     fi
                     ;;
                 "long")
@@ -1743,10 +1890,12 @@ show_single_task() {
                     local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
                     echo -ne "\r\033[K" >&2
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                        printf "│ %-79s │\n" "Summary:"
-                        echo "$ai_summary" | while IFS= read -r line; do
-                            printf "│ %-79s │\n" "$(echo "$line" | cut -c1-79)"
-                        done
+                        # Check if tags were displayed to determine separator placement
+                        local has_tags="false"
+                        if [ -n "$formatted_tags" ]; then
+                            has_tags="true"
+                        fi
+                        format_long_summary "$ai_summary" "$has_tags"
                     fi
                     ;;
             esac
@@ -1889,7 +2038,14 @@ case "${1:-}" in
         get_activity
         ;;
     "refresh")
-        clear_cache
+        if [ -n "$2" ]; then
+            # Single task cache refresh
+            shift # Remove 'refresh'
+            clear_task_cache "$1"
+        else
+            # Clear all cache
+            clear_cache
+        fi
         ;;
     "flags"|"help"|"--help")
         show_help
