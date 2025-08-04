@@ -192,6 +192,104 @@ unmark_task_actioned() {
     fi
 }
 
+# Function to calculate hours since task was updated
+calculate_hours_since_update() {
+    local updated_at="$1"
+    
+    if [ -z "$updated_at" ] || [ "$updated_at" = "null" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Get current timestamp
+    local current_timestamp=$(date +%s)
+    
+    # Convert updatedAt to timestamp (handle different formats)
+    local task_timestamp
+    if [[ "$updated_at" =~ Z$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$updated_at" +%s 2>/dev/null)
+    elif [[ "$updated_at" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${updated_at//:}" +%s 2>/dev/null)
+    else
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$updated_at" +%s 2>/dev/null)
+    fi
+    
+    if [ -z "$task_timestamp" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Calculate hours difference
+    local seconds_diff=$((current_timestamp - task_timestamp))
+    local hours_diff=$((seconds_diff / 3600))
+    
+    echo "$hours_diff"
+}
+
+# Function to calculate hours since task was created
+calculate_hours_since_creation() {
+    local created_at="$1"
+    
+    if [ -z "$created_at" ] || [ "$created_at" = "null" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Get current timestamp
+    local current_timestamp=$(date +%s)
+    
+    # Convert createdAt to timestamp (handle different formats)
+    local task_timestamp
+    if [[ "$created_at" =~ Z$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null)
+    elif [[ "$created_at" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${created_at//:}" +%s 2>/dev/null)
+    else
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$created_at" +%s 2>/dev/null)
+    fi
+    
+    if [ -z "$task_timestamp" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Calculate hours difference
+    local seconds_diff=$((current_timestamp - task_timestamp))
+    local hours_diff=$((seconds_diff / 3600))
+    
+    echo "$hours_diff"
+}
+
+# Function to check if a task is new (created within last 3 days)
+is_task_new() {
+    local created_at="$1"
+    
+    if [ -z "$created_at" ] || [ "$created_at" = "null" ]; then
+        return 1
+    fi
+    
+    # Get current timestamp and 3 days ago timestamp
+    local current_timestamp=$(date +%s)
+    local three_days_ago=$((current_timestamp - 259200))  # 3 days = 3 * 24 * 60 * 60 seconds
+    
+    # Convert createdAt to timestamp (handle different formats)
+    local task_timestamp
+    if [[ "$created_at" =~ Z$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null)
+    elif [[ "$created_at" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${created_at//:}" +%s 2>/dev/null)
+    else
+        task_timestamp=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$created_at" +%s 2>/dev/null)
+    fi
+    
+    if [ -z "$task_timestamp" ]; then
+        return 1  # Could not parse timestamp
+    fi
+    
+    # Check if task was created within last 3 days
+    [ "$task_timestamp" -gt "$three_days_ago" ]
+}
+
 # Function to check if a task was recently updated (within last 3 days)
 is_recently_updated() {
     local updated_at="$1"
@@ -881,27 +979,44 @@ format_due_date() {
     fi
 }
 
-# Function to format task titles in bold with status indicators
-format_task_title() {
-    local title="$1"
-    local task_id="$2"
-    local updated_at="$3"
-    local level="${4:-0}"  # Task level for indentation (0 = top level)
+# Function to build status indicators
+build_status_indicators() {
+    local task_id="$1"
+    local updated_at="$2"
+    local created_at="$3"
     
-    # Build status indicators
     local status_indicators=""
     if [ -n "$task_id" ] && [ -n "$updated_at" ]; then
         if is_task_actioned "$task_id" "$updated_at"; then
             status_indicators="$(format_actioned_status)"
         fi
-        if is_recently_updated "$updated_at"; then
+        # Prioritize "New" over "Updated" - if task is new, show New instead of Updated
+        local is_new_task=false
+        if [ -n "$created_at" ] && is_task_new "$created_at"; then
             if [ -n "$status_indicators" ]; then
-                status_indicators="$status_indicators $(format_recently_updated_status)"
+                status_indicators="$status_indicators $(format_new_task_status "$created_at")"
             else
-                status_indicators="$(format_recently_updated_status)"
+                status_indicators="$(format_new_task_status "$created_at")"
+            fi
+            is_new_task=true
+        elif is_recently_updated "$updated_at"; then
+            # Only show "Updated" if task is not new
+            if [ -n "$status_indicators" ]; then
+                status_indicators="$status_indicators $(format_recently_updated_status "$updated_at")"
+            else
+                status_indicators="$(format_recently_updated_status "$updated_at")"
             fi
         fi
     fi
+    
+    echo "$status_indicators"
+}
+
+# Function to format task titles in bold without status indicators
+format_task_title() {
+    local title="$1"
+    local task_id="$2"
+    local level="${3:-0}"  # Task level for indentation (0 = top level)
     
     # Add indentation for subtasks
     local indent=""
@@ -914,17 +1029,13 @@ format_task_title() {
         done
     fi
     
-    # Format title with ID and status indicators and indentation
+    # Format title with ID and indentation
     local id_suffix=""
     if [ -n "$task_id" ]; then
         id_suffix=" \033[90m#$task_id\033[0m"
     fi
     
-    if [ -n "$status_indicators" ]; then
-        echo -n "${indent}$(printf '\033[1m%s\033[0m' "$title")${id_suffix} ${status_indicators}"
-    else
-        echo -n "${indent}$(printf '\033[1m%s\033[0m' "$title")${id_suffix}"
-    fi
+    echo -n "${indent}$(printf '\033[1m%s\033[0m' "$title")${id_suffix}"
 }
 
 # Function to format actioned status in green and bold
@@ -932,9 +1043,40 @@ format_actioned_status() {
     printf '\033[32m\033[1m✔ Actioned\033[0m'
 }
 
-# Function to format recently updated status in yellow and bold
+# Function to format recently updated status in yellow and bold with hours ago
 format_recently_updated_status() {
-    printf '\033[93m• Recently updated\033[0m'
+    local updated_at="$1"
+    local hours_ago=$(calculate_hours_since_update "$updated_at")
+    
+    if [ -n "$hours_ago" ] && [ "$hours_ago" -ge 0 ]; then
+        if [ "$hours_ago" -eq 0 ]; then
+            printf '\033[93m• Updated < 1h ago\033[0m'
+        elif [ "$hours_ago" -eq 1 ]; then
+            printf '\033[93m• Updated 1h ago\033[0m'
+        else
+            printf '\033[93m• Updated %dh ago\033[0m' "$hours_ago"
+        fi
+    else
+        printf '\033[93m• Recently updated\033[0m'
+    fi
+}
+
+# Function to format new task status in blue with hours ago
+format_new_task_status() {
+    local created_at="$1"
+    local hours_ago=$(calculate_hours_since_creation "$created_at")
+    
+    if [ -n "$hours_ago" ] && [ "$hours_ago" -ge 0 ]; then
+        if [ "$hours_ago" -eq 0 ]; then
+            printf '\033[94m• New < 1h ago\033[0m'
+        elif [ "$hours_ago" -eq 1 ]; then
+            printf '\033[94m• New 1h ago\033[0m'
+        else
+            printf '\033[94m• New %dh ago\033[0m' "$hours_ago"
+        fi
+    else
+        printf '\033[94m• New task\033[0m'
+    fi
 }
 
 # Function to strip ANSI color codes for width calculation
@@ -1349,6 +1491,7 @@ fetch_subtasks_simple() {
                                 projectId: .projectId,
                                 tagIds: .tagIds,
                                 updatedAt: .updatedAt,
+                                createdAt: .createdAt,
                                 parentTaskId: .parentTaskId,
                                 level: ($level | tonumber)
                             }' > "$temp_dir/subtasks_${task_id}.json" 2>/dev/null
@@ -1485,7 +1628,7 @@ get_tasks() {
     fi
     
     # Try to load from cache first
-    local cache_key="tasks_${project_id}_${USER_ID}"
+    local cache_key="tasks_${project_id}_${USER_ID}_with_tasklists"
     local cache_file=$(get_cache_file "$cache_key")
     local show_update_indicator=false
     
@@ -1500,14 +1643,58 @@ get_tasks() {
             # Fetch tasks from all projects using the tasks endpoint with user filter
             # Use field selection to reduce payload size and improve performance
             response=$(curl -s -H "$auth_header" \
-                "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
+                "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
+            
+            # Also fetch tasks from inbox/personal tasklists to catch tasks with projectId: null
+            echo "Fetching tasks from inbox and personal tasklists..."
+            local inbox_response=$(curl -s -H "$auth_header" \
+                "$TEAMWORK_URL/projects/api/v3/tasklists.json?pageSize=500&fields=id,name,projectId" 2>/dev/null)
+            
+            if [ $? -eq 0 ] && [ -n "$inbox_response" ]; then
+                # Find inbox-like tasklists (by name pattern)
+                local inbox_tasklists=$(echo "$inbox_response" | jq -r '.tasklists[]? | select(.name | test("inbox|personal|my|unassigned"; "i")) | .id' 2>/dev/null)
+                
+                if [ -n "$inbox_tasklists" ]; then
+                    local inbox_tasks_json="[]"
+                    local temp_file=$(mktemp)
+                    echo "$inbox_tasks_json" > "$temp_file"
+                    
+                    for tasklist_id in $inbox_tasklists; do
+                        if [ -n "$tasklist_id" ]; then
+                            local tasklist_response=$(curl -s -H "$auth_header" \
+                                "$TEAMWORK_URL/projects/api/v3/tasklists/$tasklist_id/tasks.json?assigneeUserIds=$USER_ID&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress" 2>/dev/null)
+                            
+                            if [ $? -eq 0 ] && [ -n "$tasklist_response" ]; then
+                                local tasks_from_list=$(echo "$tasklist_response" | jq '.tasks // []' 2>/dev/null)
+                                if [ -n "$tasks_from_list" ] && [ "$tasks_from_list" != "null" ] && [ "$tasks_from_list" != "[]" ]; then
+                                    local current_json=$(cat "$temp_file")
+                                    echo "$current_json" "$tasks_from_list" | jq -s 'add' > "$temp_file" 2>/dev/null || echo "$current_json" > "$temp_file"
+                                fi
+                            fi
+                        fi
+                    done
+                    
+                    inbox_tasks_json=$(cat "$temp_file")
+                    rm -f "$temp_file"
+                    
+                    # Merge inbox tasks with main response if we found any
+                    if [ -n "$inbox_tasks_json" ] && [ "$inbox_tasks_json" != "[]" ]; then
+                        local main_tasks=$(echo "$response" | jq '.tasks // []' 2>/dev/null)
+                        local combined_tasks=$(echo "$main_tasks" "$inbox_tasks_json" | jq -s 'add | unique_by(.id)' 2>/dev/null)
+                        if [ -n "$combined_tasks" ]; then
+                            response=$(echo "$response" | jq --argjson tasks "$combined_tasks" '.tasks = $tasks' 2>/dev/null)
+                        fi
+                    fi
+                fi
+            fi
         else
             echo "Fetching tasks for project $project_id..."
             echo
             
             # Fetch tasks from specific project with field selection for better performance
             response=$(curl -s -H "$auth_header" \
-                "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
+                "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
+            
         fi
         
         if [ $? -ne 0 ]; then
@@ -1520,6 +1707,79 @@ get_tasks() {
         if [ -n "$error" ]; then
             echo "API Error: $error"
             exit 1
+        fi
+        
+        # If fetching for a specific project, also fetch tasks from tasklists to catch missing tasks
+        if [ "$project_id" != "ALL" ]; then
+            echo "Fetching tasklists and their tasks..."
+            
+            # Fetch tasklists in the project with timeout protection
+            local tasklists_response
+            if ! tasklists_response=$(curl -s --max-time 20 -H "$auth_header" \
+                "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasklists.json?pageSize=200" 2>/dev/null); then
+                echo "Warning: Tasklist fetch timed out, proceeding with project tasks only"
+            elif [ -n "$tasklists_response" ]; then
+                local tasklists=$(echo "$tasklists_response" | jq -r '.tasklists[]?.id // empty' 2>/dev/null)
+                
+                if [ -n "$tasklists" ]; then
+                    if [ "$debug_mode" = "true" ]; then
+                        local tasklist_count=$(echo "$tasklists" | wc -l)
+                        echo "DEBUG: Found $tasklist_count tasklists to fetch from" >&2
+                    fi
+                    
+                    local tasklist_tasks_json="[]"
+                    local processed=0
+                    
+                    # Fetch tasks from each tasklist with progress indicator
+                    local total_tasklists=$(echo "$tasklists" | wc -l)
+                    echo "Found $total_tasklists tasklists to check..."
+                    
+                    while IFS= read -r tasklist_id; do
+                        if [ -n "$tasklist_id" ] && [ "$tasklist_id" != "null" ]; then
+                            processed=$((processed + 1))
+                            echo -ne "Checking tasklist $processed/$total_tasklists...\r" >&2
+                            
+                            # Add timeout and filter by assignee at API level
+                            local tasklist_response
+                            if tasklist_response=$(curl -s --max-time 15 -H "$auth_header" \
+                                "$TEAMWORK_URL/projects/api/v3/tasklists/$tasklist_id/tasks.json?assigneeUserIds=$USER_ID&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress&pageSize=500" 2>/dev/null); then
+                                
+                                local tasks_from_list=$(echo "$tasklist_response" | jq '.tasks // []' 2>/dev/null)
+                                if [ -n "$tasks_from_list" ] && [ "$tasks_from_list" != "null" ] && [ "$tasks_from_list" != "[]" ]; then
+                                    local task_count=$(echo "$tasks_from_list" | jq 'length' 2>/dev/null || echo "0")
+                                    if [ "$task_count" -gt 0 ]; then
+                                        tasklist_tasks_json=$(echo "$tasklist_tasks_json" "$tasks_from_list" | jq -s 'add' 2>/dev/null || echo "$tasklist_tasks_json")
+                                        if [ "$debug_mode" = "true" ]; then
+                                            echo "DEBUG: Found $task_count tasks in tasklist $tasklist_id" >&2
+                                        fi
+                                    fi
+                                fi
+                            else
+                                if [ "$debug_mode" = "true" ]; then
+                                    echo "DEBUG: Timeout fetching from tasklist $tasklist_id" >&2
+                                fi
+                            fi
+                        fi
+                    done <<< "$tasklists"
+                    
+                    echo -ne "\r" >&2  # Clear progress indicator
+                    
+                    # Combine regular project tasks with tasklist tasks, removing duplicates
+                    if [ -n "$tasklist_tasks_json" ] && [ "$tasklist_tasks_json" != "[]" ]; then
+                        local project_tasks=$(echo "$response" | jq '.tasks // []')
+                        local combined_response
+                        if combined_response=$(echo "$project_tasks" "$tasklist_tasks_json" | jq -s '{tasks: (.[0] + .[1]) | unique_by(.id)}' 2>/dev/null); then
+                            response="$combined_response"
+                            if [ "$debug_mode" = "true" ]; then
+                                local original_count=$(echo "$project_tasks" | jq 'length' 2>/dev/null || echo "0")
+                                local tasklist_task_count=$(echo "$tasklist_tasks_json" | jq 'length' 2>/dev/null || echo "0")
+                                local final_count=$(echo "$combined_response" | jq '.tasks | length' 2>/dev/null || echo "0")
+                                echo "DEBUG: Combined $original_count project tasks + $tasklist_task_count tasklist tasks = $final_count unique tasks" >&2
+                            fi
+                        fi
+                    fi
+                fi
+            fi
         fi
         
         # Save to cache
@@ -1539,11 +1799,56 @@ get_tasks() {
             if [ "$project_id" = "ALL" ]; then
                 # Fetch tasks from all projects with field selection
                 response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
+                    "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
             else
                 # Fetch tasks from specific project with field selection
                 response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
+                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
+                
+                # Also fetch from all tasklists in the project for comprehensive coverage
+                echo "Fetching from all tasklists..."
+                local tasklists_response
+                if tasklists_response=$(curl -s --max-time 15 -H "$auth_header" \
+                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasklists.json?pageSize=200" 2>/dev/null); then
+                    
+                    local tasklists=$(echo "$tasklists_response" | jq -r '.tasklists[]?.id // empty' 2>/dev/null)
+                    if [ -n "$tasklists" ]; then
+                        local tasklist_tasks_json="[]"
+                        local processed=0
+                        local total_tasklists=$(echo "$tasklists" | wc -l)
+                        
+                        while IFS= read -r tasklist_id; do
+                            if [ -n "$tasklist_id" ] && [ "$tasklist_id" != "null" ]; then
+                                processed=$((processed + 1))
+                                echo -ne "Checking tasklist $processed/$total_tasklists...\r" >&2
+                                
+                                local tasklist_response
+                                if tasklist_response=$(curl -s --max-time 10 -H "$auth_header" \
+                                    "$TEAMWORK_URL/projects/api/v3/tasklists/$tasklist_id/tasks.json?assigneeUserIds=$USER_ID&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress&pageSize=500" 2>/dev/null); then
+                                    
+                                    local tasks_from_list=$(echo "$tasklist_response" | jq '.tasks // []' 2>/dev/null)
+                                    if [ -n "$tasks_from_list" ] && [ "$tasks_from_list" != "null" ] && [ "$tasks_from_list" != "[]" ]; then
+                                        local task_count=$(echo "$tasks_from_list" | jq 'length' 2>/dev/null || echo "0")
+                                        if [ "$task_count" -gt 0 ]; then
+                                            tasklist_tasks_json=$(echo "$tasklist_tasks_json" "$tasks_from_list" | jq -s 'add' 2>/dev/null || echo "$tasklist_tasks_json")
+                                        fi
+                                    fi
+                                fi
+                            fi
+                        done <<< "$tasklists"
+                        
+                        echo -ne "\r" >&2
+                        
+                        # Combine project tasks with tasklist tasks
+                        if [ -n "$tasklist_tasks_json" ] && [ "$tasklist_tasks_json" != "[]" ]; then
+                            local project_tasks=$(echo "$response" | jq '.tasks // []')
+                            local combined_response
+                            if combined_response=$(echo "$project_tasks" "$tasklist_tasks_json" | jq -s '{tasks: (.[0] + .[1]) | unique_by(.id)}' 2>/dev/null); then
+                                response="$combined_response"
+                            fi
+                        fi
+                    fi
+                fi
             fi
             
             if [ $? -ne 0 ]; then
@@ -1614,6 +1919,7 @@ get_tasks() {
             projectId: .projectId,
             tagIds: .tagIds,
             updatedAt: .updatedAt,
+            createdAt: .createdAt,
             parentTaskId: .parentTaskId,
             level: 0
         }
@@ -1781,6 +2087,7 @@ get_tasks() {
     while IFS= read -r task; do
         local task_id=$(echo "$task" | jq -r '.id')
         local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+        local created_at=$(echo "$task" | jq -r '.createdAt // ""')
         
         if [ -n "$task_id" ] && [ -n "$updated_at" ] && is_task_actioned "$task_id" "$updated_at"; then
             actioned_tasks="${actioned_tasks}${task}"$'\n'
@@ -1797,6 +2104,7 @@ get_tasks() {
             local task_id=$(echo "$task" | jq -r '.id')
             local task_name=$(echo "$task" | jq -r '.name')
             local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+        local created_at=$(echo "$task" | jq -r '.createdAt // ""')
             
             # Display actioned task as a simple header with grey title and ID, and green status
             echo -e "\033[90m${task_name} #${task_id}\033[0m \033[32m✔ Actioned\033[0m"
@@ -1822,6 +2130,7 @@ get_tasks() {
         local description=$(echo "$task" | jq -r '.description // ""')
         local tag_ids=$(echo "$task" | jq -r '.tagIds // "[]"')
         local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+        local created_at=$(echo "$task" | jq -r '.createdAt // ""')
         local parent_task_id=$(echo "$task" | jq -r '.parentTaskId // 0')
         local task_level=$(echo "$task" | jq -r '.level // 0')
         local formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
@@ -1866,10 +2175,16 @@ get_tasks() {
         local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
         
         # Format task title in bold with status indicators (but not actioned status since these are regular tasks)
-        local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at" "$task_level")
+        local formatted_title=$(format_task_title "$task_name" "$task_id" "$task_level")
+        local status_indicators=$(build_status_indicators "$task_id" "$updated_at" "$created_at")
         
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+        
+        # Display status indicators above the task table if they exist
+        if [ -n "$status_indicators" ]; then
+            echo -e "$status_indicators"
+        fi
         
         # Display task in table format
         printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
@@ -1965,7 +2280,7 @@ find_task_by_title() {
     fi
     
     # Try to load from cache first
-    local cache_key="tasks_${project_id}_${USER_ID}"
+    local cache_key="tasks_${project_id}_${USER_ID}_with_tasklists"
     local cache_file=$(get_cache_file "$cache_key")
     
     if ! is_cache_valid "$cache_file"; then
@@ -2115,7 +2430,7 @@ FEATURES:
     - Clean terminal output with structured formatting
     - Full task details including priority, dates, descriptions, and URLs
     - AI-powered task summaries using Claude (requires claude CLI)
-    - Task status indicators: ✔ Actioned (green) and • Recently updated (yellow)
+    - Task status indicators: ✔ Actioned (green), • Updated Xh ago (yellow), and • New Xh ago (blue)
     - Persistent actioned status tracking with automatic invalidation on task updates
 
 EXAMPLES:
@@ -2418,7 +2733,7 @@ show_single_task() {
     fi
     
     # Try to get task from cache
-    local cache_key="tasks_${project_id}_${USER_ID}"
+    local cache_key="tasks_${project_id}_${USER_ID}_with_tasklists"
     local cache_file=$(get_cache_file "$cache_key")
     local task_data=""
     
@@ -2454,6 +2769,7 @@ show_single_task() {
     local description=$(echo "$task_data" | jq -r '.description // ""')
     local tag_ids=$(echo "$task_data" | jq -r '.tagIds // "[]"')
     local updated_at=$(echo "$task_data" | jq -r '.updatedAt // ""')
+    local created_at=$(echo "$task_data" | jq -r '.createdAt // ""')
     
     # Format dates
     local formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
@@ -2482,10 +2798,16 @@ show_single_task() {
     local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
     
     # Format task title in bold with status indicators
-    local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at")
+    local formatted_title=$(format_task_title "$task_name" "$task_id")
+    local status_indicators=$(build_status_indicators "$task_id" "$updated_at" "$created_at")
     
     # Build task URL
     local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+    
+    # Display status indicators above the task table if they exist
+    if [ -n "$status_indicators" ]; then
+        echo -e "$status_indicators"
+    fi
     
     # Display task details in table format
     printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
@@ -2601,6 +2923,7 @@ show_task_summary() {
     local priority=$(echo "$task_with_comments" | jq -r '.task.priority // "Normal"')
     local due_date=$(echo "$task_with_comments" | jq -r '.task.dueDate // "Not set"')
     local updated_at=$(echo "$task_with_comments" | jq -r '.task.updatedAt // ""')
+    local created_at=$(echo "$task_with_comments" | jq -r '.task.createdAt // ""')
     
     # Format due date
     local formatted_due="$due_date"
@@ -2624,7 +2947,13 @@ show_task_summary() {
     local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
     
     # Format task title in bold with status indicators
-    local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at")
+    local formatted_title=$(format_task_title "$task_name" "$task_id")
+    local status_indicators=$(build_status_indicators "$task_id" "$updated_at" "$created_at")
+    
+    # Display status indicators above the task table if they exist
+    if [ -n "$status_indicators" ]; then
+        echo -e "$status_indicators"
+    fi
     
     # Display task header in table format
     printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
