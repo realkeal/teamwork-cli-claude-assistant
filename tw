@@ -1297,44 +1297,73 @@ fetch_subtasks_simple() {
     while [ -n "$current_ids" ] && [ "$level" -le "$max_depth" ]; do
         local next_ids=""
         
-        # Fetch subtasks for each ID at current level
+        # Fetch subtasks in parallel for current level
+        local pids=()
+        local temp_dir=$(mktemp -d)
+        local batch_counter=0
+        
         for task_id in $current_ids; do
             if [ -n "$task_id" ]; then
-                # Fetch subtasks for this task
-                local response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/subtasks.json?pageSize=100" 2>/dev/null)
-                
-                if [ $? -eq 0 ] && [ -n "$response" ]; then
-                    # Extract subtasks assigned to user - filter out problematic descriptions
-                    local subtasks=$(echo "$response" | jq -c --arg user_id "$user_id" --arg level "$level" '
-                        .tasks[]?
-                        | select(.assigneeUserIds[]? == ($user_id | tonumber))
-                        | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
-                        | {
-                            id: .id,
-                            name: .name,
-                            priority: .priority,
-                            dueDate: .dueDate,
-                            startDate: .startDate,
-                            description: (.description // "" | gsub("\\\\&"; "&") | gsub("\\n"; " | ") | gsub("\\r"; "") | gsub("\\\\"; "")),
-                            projectId: .projectId,
-                            tagIds: .tagIds,
-                            updatedAt: .updatedAt,
-                            parentTaskId: .parentTaskId,
-                            level: ($level | tonumber)
-                        }
-                    ')
+                {
+                    # Fetch subtasks for this task in parallel
+                    local response=$(curl -s -H "$auth_header" \
+                        "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/subtasks.json?pageSize=100" 2>/dev/null)
                     
-                    if [ -n "$subtasks" ]; then
-                        echo "$subtasks" >> "$temp_file"
-                        
-                        # Collect IDs for next level
-                        local new_ids=$(echo "$subtasks" | jq -r '.id' | tr '\n' ' ')
-                        next_ids="$next_ids $new_ids"
+                    if [ $? -eq 0 ] && [ -n "$response" ]; then
+                        # Extract subtasks assigned to user - filter out problematic descriptions
+                        echo "$response" | jq -c --arg user_id "$user_id" --arg level "$level" '
+                            .tasks[]?
+                            | select(.assigneeUserIds[]? == ($user_id | tonumber))
+                            | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
+                            | {
+                                id: .id,
+                                name: .name,
+                                priority: .priority,
+                                dueDate: .dueDate,
+                                startDate: .startDate,
+                                description: (.description // "" | gsub("\\\\&"; "&") | gsub("\\n"; " | ") | gsub("\\r"; "") | gsub("\\\\"; "")),
+                                projectId: .projectId,
+                                tagIds: .tagIds,
+                                updatedAt: .updatedAt,
+                                parentTaskId: .parentTaskId,
+                                level: ($level | tonumber)
+                            }' > "$temp_dir/subtasks_${task_id}.json" 2>/dev/null
                     fi
+                } &
+                pids+=($!)
+                ((batch_counter++))
+                
+                # Limit concurrent processes to avoid overwhelming the API
+                if [ $batch_counter -ge 8 ]; then
+                    # Wait for this batch to complete
+                    for pid in "${pids[@]}"; do
+                        wait $pid
+                    done
+                    pids=()
+                    batch_counter=0
                 fi
             fi
         done
+        
+        # Wait for remaining processes
+        for pid in "${pids[@]}"; do
+            wait $pid
+        done
+        
+        # Collect results and prepare next level
+        for result_file in "$temp_dir"/subtasks_*.json; do
+            if [ -f "$result_file" ] && [ -s "$result_file" ]; then
+                # Add to main results
+                cat "$result_file" >> "$temp_file"
+                
+                # Collect IDs for next level
+                local new_ids=$(cat "$result_file" | jq -r '.id // empty' 2>/dev/null | tr '\n' ' ')
+                next_ids="$next_ids $new_ids"
+            fi
+        done
+        
+        # Clean up temporary files
+        rm -rf "$temp_dir"
         
         # Move to next level
         current_ids="$next_ids"
@@ -1445,15 +1474,16 @@ get_tasks() {
             echo
             
             # Fetch tasks from all projects using the tasks endpoint with user filter
+            # Use field selection to reduce payload size and improve performance
             response=$(curl -s -H "$auth_header" \
-                "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500")
+                "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
         else
             echo "Fetching tasks for project $project_id..."
             echo
             
-            # Fetch tasks from specific project
+            # Fetch tasks from specific project with field selection for better performance
             response=$(curl -s -H "$auth_header" \
-                "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json")
+                "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
         fi
         
         if [ $? -ne 0 ]; then
@@ -1483,13 +1513,13 @@ get_tasks() {
             local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
             
             if [ "$project_id" = "ALL" ]; then
-                # Fetch tasks from all projects
+                # Fetch tasks from all projects with field selection
                 response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500")
+                    "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
             else
-                # Fetch tasks from specific project
+                # Fetch tasks from specific project with field selection
                 response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json")
+                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,parentTaskId,assigneeUserIds,status,progress")
             fi
             
             if [ $? -ne 0 ]; then
