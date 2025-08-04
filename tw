@@ -610,9 +610,9 @@ Analyze the task title, description, and comments above to understand:
 
 Format your response exactly as:
 
-AI SUMMARY: [2-3 sentences about the current status and progress based on analyzing the title, description, and comments. Focus on what you need to know about where things stand.]
+AI Summary: [2-3 sentences about the current status and progress based on analyzing the title, description, and comments. Focus on what you need to know about where things stand.]
 
-NEXT STEPS:
+Next Steps:
 - [specific action you should take based on the task context]
 - [another actionable step if applicable]
 - [additional steps as needed to move forward]
@@ -908,12 +908,12 @@ format_task_title() {
 
 # Function to format actioned status in green and bold
 format_actioned_status() {
-    printf '\033[32m\033[1m[ACTIONED]\033[0m'
+    printf '\033[32m\033[1m• Actioned\033[0m'
 }
 
 # Function to format recently updated status in yellow and bold
 format_recently_updated_status() {
-    printf '\033[33m\033[1m[RECENTLY UPDATED]\033[0m'
+    printf '\033[33m\033[1m• Recently updated\033[0m'
 }
 
 # Function to strip ANSI color codes for width calculation
@@ -1006,7 +1006,7 @@ format_long_summary() {
     
     echo "$ai_summary" | while IFS= read -r line; do
         # Check if this line starts a new section
-        if [[ "$line" =~ ^(AI SUMMARY|NEXT STEPS): ]]; then
+        if [[ "$line" =~ ^(AI Summary|Next Steps): ]]; then
             # Add separator before new sections (except the very first one)
             if [ "$first_line" != "true" ]; then
                 printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
@@ -1016,8 +1016,8 @@ format_long_summary() {
             fi
             first_line=false
             
-            # Check if we're entering the NEXT STEPS section
-            if [[ "$line" =~ ^NEXT\ STEPS: ]]; then
+            # Check if we're entering the Next Steps section
+            if [[ "$line" =~ ^Next\ Steps: ]]; then
                 in_next_steps=true
             else
                 in_next_steps=false
@@ -1026,10 +1026,10 @@ format_long_summary() {
         
         # Format the line content
         if [ -n "$line" ]; then
-            # Apply pink color to AI SUMMARY and NEXT STEPS headings
-            if [[ "$line" =~ ^(AI SUMMARY|NEXT STEPS): ]]; then
+            # Apply pink color to AI Summary and Next Steps headings
+            if [[ "$line" =~ ^(AI Summary|Next Steps): ]]; then
                 # Split the line to separate title from content
-                if [[ "$line" =~ ^(AI\ SUMMARY|NEXT\ STEPS):(.*) ]]; then
+                if [[ "$line" =~ ^(AI\ Summary|Next\ Steps):(.*) ]]; then
                     local title="${BASH_REMATCH[1]}:"
                     local content="${BASH_REMATCH[2]}"
                     # Apply pink color only to the title
@@ -1049,7 +1049,7 @@ format_long_summary() {
             else
                 wrap_text_for_table "$line"
             fi
-            # Add break space below list items in NEXT STEPS section
+            # Add break space below list items in Next Steps section
             if [ "$in_next_steps" = "true" ] && [[ "$line" =~ ^[[:space:]]*- ]]; then
                 printf "│ %-79s │\n" ""
             fi
@@ -1817,16 +1817,21 @@ get_tasks() {
         printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
         echo "│ $(pad_colored_text "$formatted_title" 79) │"
         printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-        # Format with proper padding for colored text
-        local id_part="ID: $task_id"
-        local priority_padded=$(pad_colored_text "$formatted_priority" 18)
-        local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
-        echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
+        # Show ID, Priority, and Due date on separate lines
+        printf "│ ID: %-75s │\n" "$task_id"
+        printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
+        printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
         
-        # Show description if it exists
+        # Show description if it exists - start on new line without padding
         if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
             printf "│ %-79s │\n" ""
-            format_description_lines "$description" 66
+            printf "│ Description: %-66s │\n" ""
+            # Format description without padding around it
+            echo "$description" | fold -s -w 77 | while IFS= read -r line; do
+                if [ -n "$line" ]; then
+                    printf "│ %-79s │\n" "$line"
+                fi
+            done
         fi
         
         printf "│ %-79s │\n" ""
@@ -1852,7 +1857,7 @@ get_tasks() {
                             echo -ne "\r\033[K" >&2
                             printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
                             printf "│ %-79s │\n" ""
-                            echo -e "│ \033[95mAI SUMMARY:\033[0m$(printf "%-66s" "") │"
+                            echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-66s" "") │"
                             wrap_text_for_table "$ai_summary"
                         else
                             echo -ne "\r\033[K" >&2
@@ -2019,7 +2024,7 @@ USAGE:
     tw task {ID|Title}      View single task details with optional AI summary
     tw open {ID|Title}      Open task in browser automatically
     tw summary {ID|Title}   Generate detailed AI summary for specific task
-    tw action {ID}          Mark task as actioned (shows green [ACTIONED] status)
+    tw action {ID}          Mark task as actioned (shows green • Actioned status)
     tw unaction {ID}        Remove actioned status from task
     tw refresh              Clear all cached data
     tw refresh {ID}         Clear cache for specific task only
@@ -2050,7 +2055,7 @@ FEATURES:
     - Clean terminal output with structured formatting
     - Full task details including priority, dates, descriptions, and URLs
     - AI-powered task summaries using Claude (requires claude CLI)
-    - Task status indicators: [ACTIONED] (green) and [RECENTLY UPDATED] (yellow)
+    - Task status indicators: • Actioned (green) and • Recently updated (yellow)
     - Persistent actioned status tracking with automatic invalidation on task updates
 
 EXAMPLES:
@@ -2425,21 +2430,26 @@ show_single_task() {
     printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
     echo "│ $(pad_colored_text "$formatted_title" 79) │"
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-    # Format with proper padding for colored text
-    local id_part="ID: $task_id"
-    local priority_padded=$(pad_colored_text "$formatted_priority" 18)
-    local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
-    echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
+    # Show ID, Priority, and Due date on separate lines
+    printf "│ ID: %-75s │\n" "$task_id"
+    printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
+    printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
     
     # Show start date if set
     if [ "$start_date" != "No start date" ] && [ "$start_date" != "null" ]; then
         printf "│ Start: %-72s │\n" "$(echo "$formatted_start" | cut -c1-72)"
     fi
     
-    # Show description if it exists
+    # Show description if it exists - start on new line without padding
     if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
         printf "│ %-79s │\n" ""
-        format_description_lines "$description" 66
+        printf "│ Description: %-66s │\n" ""
+        # Format description without padding around it
+        echo "$description" | fold -s -w 77 | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                printf "│ %-79s │\n" "$line"
+            fi
+        done
     fi
     
     printf "│ %-79s │\n" ""
@@ -2462,7 +2472,7 @@ show_single_task() {
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                         printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
                         printf "│ %-79s │\n" ""
-                        echo -e "│ \033[95mAI SUMMARY:\033[0m$(printf "%-66s" "") │"
+                        echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-66s" "") │"
                         wrap_text_for_table "$ai_summary"
                     fi
                     ;;
