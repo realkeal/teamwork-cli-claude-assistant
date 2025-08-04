@@ -838,10 +838,21 @@ format_priority() {
     local priority="$1"
     case "$priority" in
         "HIGH") 
-            # Red color AND bold for HIGH priority - use printf for better compatibility
-            printf '\033[31m\033[1mPriority: HIGH\033[0m'
+            # White "Priority:" and red (not bold) "HIGH"
+            printf '\033[37mPriority: \033[31mHIGH\033[0m'
             ;;
-        *) echo "Priority: $priority" ;;
+        "MEDIUM")
+            # White "Priority:" and yellow "MEDIUM"
+            printf '\033[37mPriority: \033[93mMEDIUM\033[0m'
+            ;;
+        "LOW")
+            # White "Priority:" and blue "LOW"
+            printf '\033[37mPriority: \033[34mLOW\033[0m'
+            ;;
+        *) 
+            # White "Priority:" and normal color for value
+            printf '\033[37mPriority: \033[0m%s' "$priority"
+            ;;
     esac
 }
 
@@ -898,28 +909,34 @@ format_task_title() {
         done
     fi
     
-    # Format title with status indicators and indentation
+    # Format title with ID and status indicators and indentation
+    local id_suffix=""
+    if [ -n "$task_id" ]; then
+        id_suffix=" \033[90m#$task_id\033[0m"
+    fi
+    
     if [ -n "$status_indicators" ]; then
-        printf '%s\033[1m%s\033[0m %s' "$indent" "$title" "$status_indicators"
+        echo -n "${indent}$(printf '\033[1m%s\033[0m' "$title")${id_suffix} ${status_indicators}"
     else
-        printf '%s\033[1m%s\033[0m' "$indent" "$title"
+        echo -n "${indent}$(printf '\033[1m%s\033[0m' "$title")${id_suffix}"
     fi
 }
 
 # Function to format actioned status in green and bold
 format_actioned_status() {
-    printf '\033[32m\033[1m• Actioned\033[0m'
+    printf '\033[32m\033[1m✔ Actioned\033[0m'
 }
 
 # Function to format recently updated status in yellow and bold
 format_recently_updated_status() {
-    printf '\033[33m\033[1m• Recently updated\033[0m'
+    printf '\033[93m• Recently updated\033[0m'
 }
 
 # Function to strip ANSI color codes for width calculation
 strip_colors() {
-    # Strip various escape sequence formats
-    echo "$1" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/\[[0-9;]*m//g' | sed 's/(B\[m//g'
+    local text="$1"
+    # Strip ANSI escape sequences in both \x1b and \033 formats
+    echo "$text" | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/\\033\[[0-9;]*[a-zA-Z]//g' -e 's/\[[0-9;]*m//g'
 }
 
 # Function to pad colored text to specific width
@@ -927,7 +944,9 @@ pad_colored_text() {
     local text="$1"
     local width="$2"
     local stripped=$(strip_colors "$text")
-    local padding=$((width - ${#stripped}))
+    # Use wc -m to count characters, not bytes, and subtract 1 for newline
+    local char_count=$(echo -n "$stripped" | wc -m)
+    local padding=$((width - char_count))
     
     if [ $padding -gt 0 ]; then
         printf "%s%*s" "$text" $padding ""
@@ -1774,8 +1793,8 @@ get_tasks() {
             local task_name=$(echo "$task" | jq -r '.name')
             local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
             
-            # Display actioned task as a simple header with grey title and green status
-            echo -e "\033[90m${task_name}\033[0m \033[32m• Actioned\033[0m"
+            # Display actioned task as a simple header with grey title and ID, and green status
+            echo -e "\033[90m${task_name} #${task_id}\033[0m \033[32m✔ Actioned\033[0m"
         done <<< "$actioned_tasks"
         
         # Add spacing after actioned tasks if there are any
@@ -1849,12 +1868,11 @@ get_tasks() {
         
         # Display task in table format
         printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-        echo "│ $(pad_colored_text "$formatted_title" 79) │"
+        echo -e "│ $(pad_colored_text "$formatted_title" 79) │"
         
         # Show full details for all regular tasks
         printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-            # Show ID, Priority, and Due date on separate lines
-            printf "│ ID: %-75s │\n" "$task_id"
+            # Show Priority and Due date on separate lines
             printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
             printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
             
@@ -2061,7 +2079,7 @@ USAGE:
     tw task {ID|Title}      View single task details with optional AI summary
     tw open {ID|Title}      Open task in browser automatically
     tw summary {ID|Title}   Generate detailed AI summary for specific task
-    tw action {ID}          Mark task as actioned (shows green • Actioned status)
+    tw action {ID}          Mark task as actioned (shows green ✔ Actioned status)
     tw unaction {ID}        Remove actioned status from task
     tw refresh              Clear all cached data
     tw refresh {ID}         Clear cache for specific task only
@@ -2092,7 +2110,7 @@ FEATURES:
     - Clean terminal output with structured formatting
     - Full task details including priority, dates, descriptions, and URLs
     - AI-powered task summaries using Claude (requires claude CLI)
-    - Task status indicators: • Actioned (green) and • Recently updated (yellow)
+    - Task status indicators: ✔ Actioned (green) and • Recently updated (yellow)
     - Persistent actioned status tracking with automatic invalidation on task updates
 
 EXAMPLES:
@@ -2465,10 +2483,9 @@ show_single_task() {
     
     # Display task details in table format
     printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-    echo "│ $(pad_colored_text "$formatted_title" 79) │"
+    echo -e "│ $(pad_colored_text "$formatted_title" 79) │"
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-    # Show ID, Priority, and Due date on separate lines
-    printf "│ ID: %-75s │\n" "$task_id"
+    # Show Priority and Due date on separate lines
     printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
     printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
     
@@ -2605,13 +2622,12 @@ show_task_summary() {
     
     # Display task header in table format
     printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-    echo "│ $(pad_colored_text "$formatted_title" 79) │"
+    echo -e "│ $(pad_colored_text "$formatted_title" 79) │"
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
     # Format with proper padding for colored text
-    local id_part="ID: $task_id"
-    local priority_padded=$(pad_colored_text "$formatted_priority" 18)
-    local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
-    echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
+    local priority_padded=$(pad_colored_text "$formatted_priority" 30)
+    local due_padded=$(pad_colored_text "$formatted_due_with_color" 48)
+    echo "│ $priority_padded │ $due_padded │"
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
     
     # Generate and display long AI summary
