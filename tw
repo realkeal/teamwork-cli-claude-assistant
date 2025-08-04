@@ -1160,7 +1160,7 @@ find_task_by_title() {
     fi
 }
 
-# Function to get task URL
+# Function to open task in browser
 open_task() {
     local input="$1"
     shift # Remove first argument, rest will be treated as part of title if needed
@@ -1208,11 +1208,24 @@ open_task() {
         echo "Found task ID: $task_id"
     fi
     
-    # Build task URL and display
+    # Build task URL
     local task_url="$TEAMWORK_URL/app/tasks/$task_id"
-    echo "Task URL: $task_url"
-    echo
-    echo "Copy this URL to open the task in your browser."
+    echo "Opening task in browser: $task_url"
+    
+    # Open the URL in the default browser
+    if command -v open &> /dev/null; then
+        # macOS
+        open "$task_url"
+    elif command -v xdg-open &> /dev/null; then
+        # Linux
+        xdg-open "$task_url"
+    elif command -v start &> /dev/null; then
+        # Windows
+        start "$task_url"
+    else
+        echo "Could not automatically open browser. Please manually open:"
+        echo "$task_url"
+    fi
 }
 
 # Function to get activity/timeline for the user
@@ -1226,14 +1239,15 @@ show_help() {
 Teamwork CLI (tw) - Command-line interface for Teamwork.com
 
 USAGE:
-    tw                    Interactive project selection wizard
-    tw tasks [options]    List tasks assigned to you  
-    tw open {ID|Title}    Display task URL for manual opening
-    tw summary {ID|Title} Generate detailed AI summary for specific task
-    tw refresh            Clear all cached data
-    tw flags              Show this help message
+    tw                      Interactive project selection wizard
+    tw tasks [options]      List tasks assigned to you  
+    tw task {ID|Title}      View single task details with optional AI summary
+    tw open {ID|Title}      Open task in browser automatically
+    tw summary {ID|Title}   Generate detailed AI summary for specific task
+    tw refresh              Clear all cached data
+    tw flags                Show this help message
 
-TASK OPTIONS:
+TASK OPTIONS (for 'tasks' command):
     --priority=VALUE     Filter by priority (high, medium, low, normal)
     --due=VALUE          Filter by due date (today, overdue, DD/MM/YYYY, YYYY-MM-DD)
     --start=VALUE        Filter by start date (today, DD/MM/YYYY, YYYY-MM-DD)  
@@ -1241,6 +1255,13 @@ TASK OPTIONS:
     --order=VALUE        Sort tasks by: priority, lastupdated, duedate, start (default: duedate)
     --summary            Add short AI summaries to task list
     --summary=long       Add detailed AI summaries to task list
+    --debug              Show debug information about API data extraction
+
+SINGLE TASK OPTIONS (for 'task' command):
+    --summary            Add short AI summary to task display
+    --summary=long       Add detailed AI summary to task display
+    --comments           Show all comments for the task
+    --comments=N         Show latest N comments (e.g., --comments=3)
     --debug              Show debug information about API data extraction
 
 FEATURES:
@@ -1262,10 +1283,16 @@ EXAMPLES:
     tw tasks --due=today            # Show tasks due today
     tw tasks --due=overdue          # Show overdue tasks
     tw tasks --order=start --summary # Show tasks by start date with summaries
+    tw task 123456                  # View single task details by ID
+    tw task "Fix login bug"         # View single task details by title search
+    tw task 123456 --summary        # View single task with short AI summary
+    tw task "Fix login bug" --summary=long # View single task with detailed AI summary
+    tw task 123456 --comments       # View single task with all comments
+    tw task 123456 --comments=3     # View single task with latest 3 comments
     tw summary 123456               # Get detailed AI summary for task
     tw summary "Fix login bug"      # Get AI summary by task title
-    tw open 123456                  # Get URL for task by ID
-    tw open "Fix login bug"         # Get URL for task by title search
+    tw open 123456                  # Open task in browser by ID
+    tw open "Fix login bug"         # Open task in browser by title search
     tw refresh                      # Clear all cached data
 
 CONFIGURATION:
@@ -1273,6 +1300,340 @@ CONFIGURATION:
     Required variables: TEAMWORK_URL, API_KEY, PASSWORD, USER_ID
 
 EOF
+}
+
+# Function to format and display task comments
+format_task_comments() {
+    local task_id="$1"
+    local comments_limit="$2"
+    
+    # Fetch comments for the task
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local page_size="50"  # Default to 50, will be adjusted based on limit
+    
+    # Adjust page size based on limit - but ensure we get enough to sort properly
+    if [ "$comments_limit" != "all" ] && [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
+        # Get a bit more than requested to ensure we can sort and limit properly
+        local requested_limit="$comments_limit"
+        if [ "$requested_limit" -lt 50 ]; then
+            page_size="50"  # Get more than needed to ensure proper sorting
+        else
+            page_size="$requested_limit"
+        fi
+    fi
+    
+    # Use same approach as existing function but with descending order
+    local comments_response=$(curl -s -H "$auth_header" \
+        "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=$page_size&orderMode=desc" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
+    
+    if [ $? -ne 0 ] || [ -z "$comments_response" ]; then
+        echo "Comments: Unable to fetch comments"
+        return 1
+    fi
+    
+    # Check for API errors
+    local error=$(echo "$comments_response" | jq -r '.error // empty')
+    if [ -n "$error" ]; then
+        echo "Comments: API Error - $error"
+        return 1
+    fi
+    
+    # Validate limit before processing
+    if [ "$comments_limit" != "all" ] && ! [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
+        echo "Comments: Invalid limit '$comments_limit' (use 'all' or a number)"
+        return 1
+    fi
+    
+    # Extract comments data
+    local comments_data=$(echo "$comments_response" | jq -r '.comments // []')
+    local total_comments=$(echo "$comments_data" | jq 'length')
+    
+    if [ "$total_comments" -eq 0 ]; then
+        echo "Comments: No comments found"
+        return 0
+    fi
+    
+    # Apply limit if specified
+    local display_comments=""
+    if [ "$comments_limit" = "all" ]; then
+        display_comments="$comments_data"
+        echo "Comments: ($total_comments total)"
+    elif [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
+        local limit_num="$comments_limit"
+        if [ "$limit_num" -ge "$total_comments" ]; then
+            display_comments="$comments_data"
+            echo "Comments: (showing all $total_comments)"
+        else
+            # Take the latest N comments (comments are usually returned in reverse chronological order)
+            display_comments=$(echo "$comments_data" | jq ".[0:$limit_num]")
+            echo "Comments: (showing latest $limit_num of $total_comments)"
+        fi
+    fi
+    
+    # Note: Author information will be extracted directly from comment objects
+    
+    # Format and display each comment - comprehensive field name handling
+    echo "$display_comments" | jq -r '.[] | 
+        "  • " + 
+        (.postedDateTime // .createdDate // .dateCreated // "Unknown date") + 
+        " - " + 
+        (
+            # Try the most common Teamwork API field patterns
+            if (.author | type == "object") and (.author.firstName // .author.lastName // .author.name // "") != "" then
+                ((.author.firstName // "") + " " + (.author.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.author.name // "Unknown User") else . end
+            elif (.postedBy | type == "object") and (.postedBy.firstName // .postedBy.lastName // .postedBy.name // "") != "" then
+                ((.postedBy.firstName // "") + " " + (.postedBy.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.postedBy.name // "Unknown User") else . end
+            elif (.createdBy | type == "object") and (.createdBy.firstName // .createdBy.lastName // .createdBy.name // "") != "" then
+                ((.createdBy.firstName // "") + " " + (.createdBy.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.createdBy.name // "Unknown User") else . end
+            elif (.user | type == "object") and (.user.firstName // .user.lastName // .user.name // "") != "" then
+                ((.user.firstName // "") + " " + (.user.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.user.name // "Unknown User") else . end
+            elif (.authorName // .userName // .createdByName // .postedByName // "") != "" then
+                (.authorName // .userName // .createdByName // .postedByName)
+            else
+                "Unknown User"
+            end
+        ) + 
+        ":\n    " + 
+        (.body // "No content")' | while IFS= read -r line; do
+        
+        # Format dates if they look like ISO dates
+        if [[ "$line" =~ ^[[:space:]]*•[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            # Extract the ISO date part (handle both Z and timezone formats)
+            local iso_date=$(echo "$line" | sed -n 's/^[[:space:]]*•[[:space:]]*\([0-9T:.-]*[Z+][0-9:]*\).*/\1/p')
+            if [ -z "$iso_date" ]; then
+                iso_date=$(echo "$line" | sed -n 's/^[[:space:]]*•[[:space:]]*\([0-9T:-]*\).*/\1/p')
+            fi
+            
+            if [ -n "$iso_date" ]; then
+                # Try different date format parsing
+                local formatted_date=""
+                if [[ "$iso_date" =~ Z$ ]]; then
+                    formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso_date" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+                elif [[ "$iso_date" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+                    # Handle timezone offset format
+                    formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${iso_date//:}" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+                else
+                    # Try basic format without timezone
+                    formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$iso_date" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+                fi
+                
+                if [ -n "$formatted_date" ]; then
+                    # Replace the ISO date in the line with the formatted date
+                    line=$(echo "$line" | sed "s/•[[:space:]]*[0-9T:.-]*[Z+][0-9:]*/• $formatted_date/" | sed "s/•[[:space:]]*[0-9T:-]*/• $formatted_date/")
+                fi
+            fi
+        fi
+        
+        echo "$line"
+    done
+}
+
+# Function to show single task details
+show_single_task() {
+    local input="$1"
+    shift # Remove first argument, rest will be treated as options or part of title
+    
+    # Parse flags
+    local summary_mode=""
+    local debug_mode="false"
+    local comments_mode=""
+    local comments_limit=""
+    local remaining_args=()
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --summary=*)
+                summary_mode="${1#*=}"
+                shift
+                ;;
+            --summary)
+                summary_mode="short"
+                shift
+                ;;
+            --comments=*)
+                comments_mode="true"
+                comments_limit="${1#*=}"
+                shift
+                ;;
+            --comments)
+                comments_mode="true"
+                comments_limit="all"
+                shift
+                ;;
+            --debug)
+                debug_mode="true"
+                shift
+                ;;
+            --help)
+                echo "Use 'tw flags' to see available commands and options."
+                return 0
+                ;;
+            --*)
+                echo "Unknown option: $1"
+                echo "Use 'tw task --help' for usage information."
+                return 1
+                ;;
+            *)
+                remaining_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Handle help flag as first argument
+    if [ "$input" = "--help" ]; then
+        echo "Use 'tw flags' to see available commands and options."
+        return 0
+    fi
+    
+    if [ -z "$input" ]; then
+        echo "Error: Task ID or title is required"
+        echo "Usage: tw task {ID|Title} [options]"
+        return 1
+    fi
+    
+    local task_id=""
+    
+    # Check if input is numeric (task ID)
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+        task_id="$input"
+    else
+        # Combine input with remaining args as the task title search
+        local search_title="$input"
+        if [ ${#remaining_args[@]} -gt 0 ]; then
+            search_title="$input ${remaining_args[*]}"
+        fi
+        
+        echo "Searching for task: '$search_title'..."
+        task_id=$(find_task_by_title "$search_title")
+        
+        if [ $? -ne 0 ] || [ -z "$task_id" ]; then
+            return 1
+        fi
+    fi
+    
+    # Fetch task details from cache or API
+    local project_id=$(select_project)
+    if [ $? -ne 0 ] || [ -z "$project_id" ]; then
+        echo "Error: No project selected. Please run 'tw' to select a project first."
+        return 1
+    fi
+    
+    # Try to get task from cache
+    local cache_key="tasks_${project_id}_${USER_ID}"
+    local cache_file=$(get_cache_file "$cache_key")
+    local task_data=""
+    
+    if is_cache_valid "$cache_file"; then
+        local response=$(cat "$cache_file")
+        task_data=$(echo "$response" | jq -r --arg task_id "$task_id" '.tasks[] | select(.id == ($task_id | tonumber))')
+    fi
+    
+    # If not found in cache or cache invalid, fetch directly
+    if [ -z "$task_data" ] || [ "$task_data" = "null" ]; then
+        local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+        local response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/tasks/$task_id.json")
+        
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to fetch task from Teamwork API"
+            return 1
+        fi
+        
+        local error=$(echo "$response" | jq -r '.error // empty')
+        if [ -n "$error" ]; then
+            echo "API Error: $error"
+            return 1
+        fi
+        
+        task_data=$(echo "$response" | jq -r '.task')
+    fi
+    
+    # Extract task details
+    local task_name=$(echo "$task_data" | jq -r '.name // "Unknown Task"')
+    local due_date=$(echo "$task_data" | jq -r '.dueDate // "No due date"')
+    local start_date=$(echo "$task_data" | jq -r '.startDate // "No start date"')
+    local priority=$(echo "$task_data" | jq -r '.priority // "Normal"')
+    local description=$(echo "$task_data" | jq -r '.description // ""')
+    local tag_ids=$(echo "$task_data" | jq -r '.tagIds // "[]"')
+    local updated_at=$(echo "$task_data" | jq -r '.updatedAt // ""')
+    
+    # Format dates
+    local formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
+    local formatted_start=$(echo "$start_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$start_date")
+    
+    # Format tags if present
+    local formatted_tags=""
+    if [ "$tag_ids" != "[]" ] && [ "$tag_ids" != "null" ]; then
+        local tags_lookup=$(fetch_tags "$project_id")
+        formatted_tags=$(format_tags "$tag_ids" "$tags_lookup")
+    fi
+    
+    # Priority display
+    local priority_display="NORMAL"
+    case "$priority" in
+        "high") priority_display="HIGH" ;;
+        "medium") priority_display="MEDIUM" ;;
+        "low") priority_display="LOW" ;;
+        *) priority_display="NORMAL" ;;
+    esac
+    
+    # Build task URL
+    local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+    
+    # Display task details
+    echo "--- $(format_markdown "$task_name") ---"
+    echo "ID: $task_id  |  Priority: $priority_display  |  Due: $formatted_due"
+    
+    # Show start date if set
+    if [ "$start_date" != "No start date" ] && [ "$start_date" != "null" ]; then
+        echo "Start: $formatted_start"
+    fi
+    
+    # Show description if it exists
+    if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+        echo "Description: $(format_markdown "$description")"
+    fi
+    
+    echo "URL: $task_url"
+    
+    # Show tags if they exist
+    if [ -n "$formatted_tags" ]; then
+        echo "Tags: $formatted_tags"
+    fi
+    
+    # Show AI summary if requested
+    if [ -n "$summary_mode" ]; then
+        local task_with_comments=$(get_task_with_comments "$task_id")
+        if [ -n "$task_with_comments" ]; then
+            case "$summary_mode" in
+                "short")
+                    echo -ne "Generating AI summary..." >&2
+                    local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                    echo -ne "\r\033[K" >&2
+                    if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
+                        echo "Summary: $ai_summary"
+                    fi
+                    ;;
+                "long")
+                    echo -ne "Generating AI summary..." >&2
+                    local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                    echo -ne "\r\033[K" >&2
+                    if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
+                        echo ""
+                        echo "$ai_summary"
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+    
+    # Show comments if requested
+    if [ -n "$comments_mode" ]; then
+        echo ""
+        format_task_comments "$task_id" "$comments_limit"
+    fi
+    
+    echo
 }
 
 # Function to show detailed summary for a specific task
@@ -1350,6 +1711,15 @@ show_task_summary() {
 case "${1:-}" in
     "tasks")
         get_tasks "$@"
+        ;;
+    "task")
+        if [ -z "$2" ]; then
+            echo "Error: Task ID or title is required"
+            echo "Usage: tw task {ID|Title} [options]"
+            exit 1
+        fi
+        shift # Remove 'task'
+        show_single_task "$@"
         ;;
     "open")
         if [ -z "$2" ]; then
