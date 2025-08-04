@@ -427,30 +427,8 @@ fetch_assigned_projects() {
     echo "$formatted_projects"
 }
 
-# Function to display fancy splash screen
-show_splash_screen() {
-    clear
-    echo ""
-    echo ""
-    echo ""
-    # TW CLI - centered
-    echo "                    TEAMWORK CLI"
-    echo ""
-    echo ""
-    echo "                     v$(date +%Y) - Built by Anthony Keal"
-    echo "                      contact@business.anthonykeal.com.au"
-    echo ""
-    echo ""
-    echo "Press any key to continue..."
-    
-    # Wait for user input instead of sleep
-    read -n 1 -s
-}
-
 # Function for project selection wizard with arrow key navigation
 project_wizard() {
-    # Show splash screen first
-    show_splash_screen
     
     local projects_json=$(fetch_assigned_projects)
     
@@ -483,24 +461,30 @@ project_wizard() {
         echo "Use up/down arrow keys to navigate, Enter to select, q to quit"
         echo
         
+        printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
+        printf "│ %-79s │\n" "Available Projects"
+        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+        
         for i in $(seq 0 $((project_count - 1))); do
             local project_id=$(echo "$projects_json" | jq -r ".[$i].id")
             local project_name=$(echo "$projects_json" | jq -r ".[$i].name")
             
             if [ $i -eq $selected ]; then
                 if [ "$project_id" = "ALL" ]; then
-                    printf "> %s\n" "$project_name"
+                    printf "│ > %-76s │\n" "$(echo "$project_name" | cut -c1-76)"
                 else
-                    printf "> ID:%s %s\n" "$project_id" "$project_name"
+                    printf "│ > ID:%-7s %-66s │\n" "$project_id" "$(echo "$project_name" | cut -c1-66)"
                 fi
             else
                 if [ "$project_id" = "ALL" ]; then
-                    printf "  %s\n" "$project_name"
+                    printf "│   %-76s │\n" "$(echo "$project_name" | cut -c1-76)"
                 else
-                    printf "  ID:%s %s\n" "$project_id" "$project_name"
+                    printf "│   ID:%-7s %-66s │\n" "$project_id" "$(echo "$project_name" | cut -c1-66)"
                 fi
             fi
         done
+        
+        printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
     }
     
     display_projects
@@ -576,6 +560,65 @@ format_markdown() {
     local text="$1"
     # Convert **text** to bold using ANSI escape codes
     echo "$text" | sed 's/\*\*\([^*]*\)\*\*/\x1b[1m\1\x1b[0m/g'
+}
+
+# Function to format text with colors and bold  
+format_priority() {
+    local priority="$1"
+    case "$priority" in
+        "HIGH") 
+            # Red color AND bold for HIGH priority - use printf for better compatibility
+            printf '\033[31m\033[1m*** Priority: HIGH ***\033[0m'
+            ;;
+        *) echo "Priority: $priority" ;;
+    esac
+}
+
+# Function to format dates (check if overdue)
+format_due_date() {
+    local due_date="$1"
+    local formatted_date="$2"
+    
+    if [ -n "$due_date" ] && [ "$due_date" != "null" ] && [ "$due_date" != "No due date" ]; then
+        local today=$(date "+%Y-%m-%d")
+        local due_date_only=$(echo "$due_date" | sed 's/T.*//')
+        
+        if [ "$due_date_only" \< "$today" ]; then
+            # Overdue - red color
+            printf '\033[31m!!! Due: %s !!!\033[0m' "$formatted_date"
+        else
+            echo "Due: $formatted_date"
+        fi
+    else
+        echo "Due: $formatted_date"
+    fi
+}
+
+# Function to format task titles in bold
+format_task_title() {
+    local title="$1"
+    # Bold formatting for titles
+    printf '\033[1m>> %s <<\033[0m' "$title"
+}
+
+# Function to strip ANSI color codes for width calculation
+strip_colors() {
+    # Strip various escape sequence formats
+    echo "$1" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/\[[0-9;]*m//g' | sed 's/(B\[m//g'
+}
+
+# Function to pad colored text to specific width
+pad_colored_text() {
+    local text="$1"
+    local width="$2"
+    local stripped=$(strip_colors "$text")
+    local padding=$((width - ${#stripped}))
+    
+    if [ $padding -gt 0 ]; then
+        printf "%s%*s" "$text" $padding ""
+    else
+        echo "$text"
+    fi
 }
 
 # Function to fetch tags for the project and create a lookup map
@@ -1052,23 +1095,38 @@ get_tasks() {
             *) priority_display="NORMAL" ;;
         esac
         
+        # Format priority with color
+        local formatted_priority=$(format_priority "$priority_display")
+        
+        # Format due date with overdue check
+        local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
+        
+        # Format task title in bold
+        local formatted_title=$(format_task_title "$task_name")
+        
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
         
-        # Display task in new clean format
-        echo "--- $(format_markdown "$task_name") ---"
-        echo "ID: $task_id  |  Priority: $priority_display  |  Due: $formatted_due"
+        # Display task in table format
+        printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
+        echo "│ $(pad_colored_text "$formatted_title" 79) │"
+        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+        # Format with proper padding for colored text
+        local id_part="ID: $task_id"
+        local priority_padded=$(pad_colored_text "$formatted_priority" 20)
+        local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
+        echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
         
         # Show description if it exists
         if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
-            echo "Description: $(format_markdown "$description")"
+            printf "│ Description: %-66s │\n" "$(echo "$description" | cut -c1-66)"
         fi
         
-        echo "URL: $task_url"
+        printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
         
         # Show tags if they exist and were filtered
         if [ -n "$formatted_tags" ]; then
-            echo "Tags: $formatted_tags"
+            printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
         fi
         
         # Show AI summary if requested
@@ -1084,7 +1142,8 @@ get_tasks() {
                         if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                             # Clear progress line and show summary
                             echo -ne "\r\033[K" >&2
-                            echo "Summary: $ai_summary"
+                            printf "│ %-79s │\n" "Summary:"
+                            printf "│ %-79s │\n" "$(echo "$ai_summary" | cut -c1-79)"
                         else
                             echo -ne "\r\033[K" >&2
                         fi
@@ -1094,7 +1153,10 @@ get_tasks() {
                         if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                             # Clear progress line and show summary
                             echo -ne "\r\033[K" >&2
-                            echo "$ai_summary" | sed 's/^//'
+                            printf "│ %-79s │\n" "Summary:"
+                            echo "$ai_summary" | while IFS= read -r line; do
+                                printf "│ %-79s │\n" "$(echo "$line" | cut -c1-79)"
+                            done
                         else
                             echo -ne "\r\033[K" >&2
                         fi
@@ -1105,6 +1167,7 @@ get_tasks() {
             fi
         fi
         
+        printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
         echo
     done <<< "$(echo "$tasks_data" | jq -c '.[]')"
     
@@ -1357,26 +1420,29 @@ format_task_comments() {
     local display_comments=""
     if [ "$comments_limit" = "all" ]; then
         display_comments="$comments_data"
-        echo "Comments: ($total_comments total)"
+        printf "│ %-79s │\n" "Comments: ($total_comments total)"
     elif [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
         local limit_num="$comments_limit"
         if [ "$limit_num" -ge "$total_comments" ]; then
             display_comments="$comments_data"
-            echo "Comments: (showing all $total_comments)"
+            printf "│ %-79s │\n" "Comments: (showing all $total_comments)"
         else
             # Take the latest N comments (comments are usually returned in reverse chronological order)
             display_comments=$(echo "$comments_data" | jq ".[0:$limit_num]")
-            echo "Comments: (showing latest $limit_num of $total_comments)"
+            printf "│ %-79s │\n" "Comments: (showing latest $limit_num of $total_comments)"
         fi
     fi
     
+    # Add table header for comments
+    printf "├───────────────────────────┬─────────────────┬───────────────────────────────────┤\n"
+    printf "│ %-25s │ %-15s │ %-33s │\n" "Date" "Author" "Content"
+    printf "├───────────────────────────┼─────────────────┼───────────────────────────────────┤\n"
+    
     # Note: Author information will be extracted directly from comment objects
     
-    # Format and display each comment - comprehensive field name handling
+    # Format and display each comment in table format
     echo "$display_comments" | jq -r '.[] | 
-        "  • " + 
-        (.postedDateTime // .createdDate // .dateCreated // "Unknown date") + 
-        " - " + 
+        (.postedDateTime // .createdDate // .dateCreated // "Unknown date") + "|" + 
         (
             # Try the most common Teamwork API field patterns
             if (.author | type == "object") and (.author.firstName // .author.lastName // .author.name // "") != "" then
@@ -1392,39 +1458,81 @@ format_task_comments() {
             else
                 "Unknown User"
             end
-        ) + 
-        ":\n    " + 
-        (.body // "No content")' | while IFS= read -r line; do
+        ) + "|" + 
+        (.body // "No content")' | while IFS='|' read -r date_part author_part content_part; do
         
         # Format dates if they look like ISO dates
-        if [[ "$line" =~ ^[[:space:]]*•[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
-            # Extract the ISO date part (handle both Z and timezone formats)
-            local iso_date=$(echo "$line" | sed -n 's/^[[:space:]]*•[[:space:]]*\([0-9T:.-]*[Z+][0-9:]*\).*/\1/p')
-            if [ -z "$iso_date" ]; then
-                iso_date=$(echo "$line" | sed -n 's/^[[:space:]]*•[[:space:]]*\([0-9T:-]*\).*/\1/p')
+        local formatted_date="$date_part"
+        if [[ "$date_part" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            if [[ "$date_part" =~ Z$ ]]; then
+                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$date_part" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+            elif [[ "$date_part" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+                # Handle timezone offset format
+                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${date_part//:}" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+            else
+                # Try basic format without timezone
+                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$date_part" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
             fi
             
-            if [ -n "$iso_date" ]; then
-                # Try different date format parsing
-                local formatted_date=""
-                if [[ "$iso_date" =~ Z$ ]]; then
-                    formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso_date" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
-                elif [[ "$iso_date" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
-                    # Handle timezone offset format
-                    formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${iso_date//:}" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
-                else
-                    # Try basic format without timezone
-                    formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$iso_date" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
-                fi
-                
-                if [ -n "$formatted_date" ]; then
-                    # Replace the ISO date in the line with the formatted date
-                    line=$(echo "$line" | sed "s/•[[:space:]]*[0-9T:.-]*[Z+][0-9:]*/• $formatted_date/" | sed "s/•[[:space:]]*[0-9T:-]*/• $formatted_date/")
-                fi
+            if [ -z "$formatted_date" ]; then
+                formatted_date="$date_part"
             fi
         fi
         
-        echo "$line"
+        # Display comment in table format with full content
+        local date_display="$(echo "$formatted_date" | cut -c1-25)"
+        local author_display="$(echo "$author_part" | cut -c1-15)"
+        
+        # For content, split into multiple lines if needed
+        local content_lines=()
+        local remaining_content="$content_part"
+        
+        # Split content into chunks that fit in the content column (33 chars)
+        while [ ${#remaining_content} -gt 33 ]; do
+            local chunk="${remaining_content:0:33}"
+            
+            # Try to break at word boundary by finding the last space within the chunk
+            local break_pos=33
+            local temp_chunk="$chunk"
+            
+            # Look for the last space character within reasonable distance from the end
+            for ((pos=33; pos>=18; pos--)); do
+                if [ "${remaining_content:$((pos-1)):1}" = " " ]; then
+                    break_pos=$pos
+                    break
+                fi
+            done
+            
+            # Extract the chunk and update remaining content
+            chunk="${remaining_content:0:$break_pos}"
+            
+            # Skip the space if we broke at a word boundary
+            if [ "${remaining_content:$((break_pos-1)):1}" = " " ]; then
+                remaining_content="${remaining_content:$break_pos}"
+            else
+                remaining_content="${remaining_content:$break_pos}"
+            fi
+            
+            # Trim trailing spaces from chunk
+            chunk="${chunk%"${chunk##*[![:space:]]}"}"
+            content_lines+=("$chunk")
+        done
+        
+        # Add remaining content
+        if [ -n "$remaining_content" ]; then
+            content_lines+=("$remaining_content")
+        fi
+        
+        # Display first line with date and author
+        printf "│ %-25s │ %-15s │ %-33s │\n" "$date_display" "$author_display" "${content_lines[0]:-}"
+        
+        # Display additional content lines
+        for ((i=1; i<${#content_lines[@]}; i++)); do
+            printf "│ %-25s │ %-15s │ %-33s │\n" "" "" "${content_lines[i]}"
+        done
+        
+        # Add visual separator after each comment
+        printf "├───────────────────────────┼─────────────────┼───────────────────────────────────┤\n"
     done
 }
 
@@ -1577,28 +1685,43 @@ show_single_task() {
         *) priority_display="NORMAL" ;;
     esac
     
+    # Format priority with color
+    local formatted_priority=$(format_priority "$priority_display")
+    
+    # Format due date with overdue check
+    local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
+    
+    # Format task title in bold
+    local formatted_title=$(format_task_title "$task_name")
+    
     # Build task URL
     local task_url="$TEAMWORK_URL/app/tasks/$task_id"
     
-    # Display task details
-    echo "--- $(format_markdown "$task_name") ---"
-    echo "ID: $task_id  |  Priority: $priority_display  |  Due: $formatted_due"
+    # Display task details in table format
+    printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
+    echo "│ $(pad_colored_text "$formatted_title" 79) │"
+    printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+    # Format with proper padding for colored text
+    local id_part="ID: $task_id"
+    local priority_padded=$(pad_colored_text "$formatted_priority" 20)
+    local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
+    echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
     
     # Show start date if set
     if [ "$start_date" != "No start date" ] && [ "$start_date" != "null" ]; then
-        echo "Start: $formatted_start"
+        printf "│ Start: %-72s │\n" "$(echo "$formatted_start" | cut -c1-72)"
     fi
     
     # Show description if it exists
     if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
-        echo "Description: $(format_markdown "$description")"
+        printf "│ Description: %-66s │\n" "$(echo "$description" | cut -c1-66)"
     fi
     
-    echo "URL: $task_url"
+    printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
     
     # Show tags if they exist
     if [ -n "$formatted_tags" ]; then
-        echo "Tags: $formatted_tags"
+        printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
     fi
     
     # Show AI summary if requested
@@ -1611,7 +1734,8 @@ show_single_task() {
                     local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
                     echo -ne "\r\033[K" >&2
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                        echo "Summary: $ai_summary"
+                        printf "│ %-79s │\n" "Summary:"
+                        printf "│ %-79s │\n" "$(echo "$ai_summary" | cut -c1-79)"
                     fi
                     ;;
                 "long")
@@ -1619,8 +1743,10 @@ show_single_task() {
                     local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
                     echo -ne "\r\033[K" >&2
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                        echo ""
-                        echo "$ai_summary"
+                        printf "│ %-79s │\n" "Summary:"
+                        echo "$ai_summary" | while IFS= read -r line; do
+                            printf "│ %-79s │\n" "$(echo "$line" | cut -c1-79)"
+                        done
                     fi
                     ;;
             esac
@@ -1629,10 +1755,11 @@ show_single_task() {
     
     # Show comments if requested
     if [ -n "$comments_mode" ]; then
-        echo ""
+        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
         format_task_comments "$task_id" "$comments_limit"
     fi
     
+    printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
     echo
 }
 
@@ -1690,10 +1817,25 @@ show_task_summary() {
         *) priority_display="NORMAL" ;;
     esac
     
-    # Display task header
-    echo "--- $(format_markdown "$task_name") ---"
-    echo "ID: $task_id  |  Priority: $priority_display  |  Due: $formatted_due"
-    echo ""
+    # Format priority with color
+    local formatted_priority=$(format_priority "$priority_display")
+    
+    # Format due date with overdue check
+    local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
+    
+    # Format task title in bold
+    local formatted_title=$(format_task_title "$task_name")
+    
+    # Display task header in table format
+    printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
+    echo "│ $(pad_colored_text "$formatted_title" 79) │"
+    printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+    # Format with proper padding for colored text
+    local id_part="ID: $task_id"
+    local priority_padded=$(pad_colored_text "$formatted_priority" 20)
+    local due_padded=$(pad_colored_text "$formatted_due_with_color" 36)
+    echo "│ $(printf "%-15s" "$id_part") │ $priority_padded │ $due_padded │"
+    printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
     
     # Generate and display long AI summary
     echo -ne "Generating AI summary..." >&2
@@ -1701,10 +1843,14 @@ show_task_summary() {
     echo -ne "\r\033[K" >&2  # Clear the progress line
     
     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-        echo "$ai_summary"
+        echo "$ai_summary" | while IFS= read -r line; do
+            printf "│ %-79s │\n" "$(echo "$line" | cut -c1-79)"
+        done
     else
-        echo "AI summary unavailable"
+        printf "│ %-79s │\n" "AI summary unavailable"
     fi
+    
+    printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
 }
 
 # Main command dispatcher
