@@ -8,6 +8,8 @@ A comprehensive command-line interface for interacting with Teamwork.com project
 - **Task Management** - List, filter, and view tasks with clean formatting
 - **Advanced Filtering** - Filter by priority, due date, start date, and tags
 - **Smart Caching** - Efficient caching with task-based invalidation
+- **Task Action Tracking** - Mark tasks as actioned with persistent status indicators
+- **Status Indicators** - Visual status tracking (Actioned, Recently Updated, Created)
 - **Clean Terminal Output** - Simple, structured formatting for easy reading
 
 ## Installation
@@ -78,9 +80,14 @@ The tool looks for configuration in this order:
 tw                    # Interactive project selection wizard
 tw tasks              # List all tasks
 tw tasks --summary    # List tasks with short AI summaries
+tw task 123456        # View single task details
 tw summary 123456     # Get detailed AI summary for specific task
-tw open 123456        # Get URL for task ID
-tw open "Task Title"  # Get URL by searching task title
+tw open 123456        # Open task in browser
+tw open "Task Title"  # Open task by searching task title
+tw action 123456      # Mark task as actioned
+tw unaction 123456    # Remove actioned status from task
+tw unaction --all     # Remove actioned status from all tasks
+tw refresh            # Clear all cached data
 tw flags              # Show help and available options
 ```
 
@@ -93,6 +100,24 @@ tw tasks --due=overdue            # Show overdue tasks
 tw tasks --due=2024-12-25         # Filter by specific date
 tw tasks --start=today            # Filter by start date
 tw tasks --tags="urgent"          # Filter by tag name
+tw tasks --order=priority         # Sort by priority (high first)
+tw tasks --order=lastupdated      # Sort by last updated
+tw tasks --order=start            # Sort by start date
+tw tasks --no-clear               # Don't clear terminal before output
+tw tasks --subtask-depth=2        # Show subtasks up to 2 levels deep
+```
+
+### Single Task Details
+
+View detailed information for individual tasks:
+
+```bash
+tw task 123456                  # View single task details
+tw task "Task Title"            # View task by searching title
+tw task 123456 --summary        # View with short AI summary
+tw task 123456 --summary=long   # View with detailed AI summary
+tw task 123456 --comments       # View with all comments
+tw task 123456 --comments=3     # View with latest 3 comments
 ```
 
 ### AI Features
@@ -104,6 +129,16 @@ tw tasks --summary              # Add short AI summaries to task list
 tw tasks --summary=long         # Add detailed AI summaries to task list  
 tw summary 123456               # Get detailed AI summary for specific task
 tw summary "Task Title"         # Get AI summary by searching task title
+```
+
+### Task Action Management
+
+Track task progress with action status:
+
+```bash
+tw action 123456                # Mark task as actioned
+tw unaction 123456              # Remove actioned status
+tw unaction --all               # Remove actioned status from all tasks
 ```
 
 ### Cache Management
@@ -130,22 +165,28 @@ URL: https://company.teamwork.com/app/tasks/123457
 Tags: bug, frontend
 ```
 
-### With AI Summaries
+### With Status Indicators and AI Summaries
 
 ```
---- Complete user registration system ---
+✔ Actioned --- Complete user registration system ---
 ID: 123456  |  Priority: HIGH  |  Due: Friday 8 Aug, 2025
 Description: Implement user registration with email verification and secure password hashing
 URL: https://company.teamwork.com/app/tasks/123456
 Tags: backend, security
 Summary: User registration form is complete, working on backend validation and password hashing implementation
 
---- Fix login validation bug ---
+• Task edited 2h ago --- Fix login validation bug ---
 ID: 123457  |  Priority: MEDIUM  |  Due: Monday 12 Aug, 2025
 Description: Fix the validation issue in the login form that prevents users from signing in
 URL: https://company.teamwork.com/app/tasks/123457
 Tags: bug, frontend
 Summary: Bug reproduced and root cause identified in form validation logic, fix ready for testing
+
+• Created 5h ago --- Setup CI/CD pipeline ---
+ID: 123458  |  Priority: LOW  |  Due: Wednesday 14 Aug, 2025
+Description: Configure automated testing and deployment pipeline
+URL: https://company.teamwork.com/app/tasks/123458
+Tags: devops, automation
 ```
 
 ### Detailed AI Summary
