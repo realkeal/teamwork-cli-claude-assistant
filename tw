@@ -192,6 +192,28 @@ unmark_task_actioned() {
     fi
 }
 
+# Function to remove actioned status from all tasks
+unmark_all_tasks_actioned() {
+    local actioned_files=("$CACHE_DIR"/actioned_*.json)
+    local count=0
+    
+    # Check if any actioned files exist
+    if [ ! -f "${actioned_files[0]}" ]; then
+        echo "No actioned tasks found"
+        return 0
+    fi
+    
+    # Remove all actioned files
+    for file in "${actioned_files[@]}"; do
+        if [ -f "$file" ]; then
+            rm "$file"
+            ((count++))
+        fi
+    done
+    
+    echo "Removed actioned status from $count task(s)"
+}
+
 # Function to calculate hours since task was updated
 calculate_hours_since_update() {
     local updated_at="$1"
@@ -2401,6 +2423,7 @@ USAGE:
     tw summary {ID|Title}   Generate detailed AI summary for specific task
     tw action {ID}          Mark task as actioned (shows green ✔ Actioned status)
     tw unaction {ID}        Remove actioned status from task
+    tw unaction --all       Remove actioned status from all tasks
     tw refresh              Clear all cached data
     tw refresh {ID}         Clear cache for specific task only
     tw flags                Show this help message
@@ -2459,6 +2482,7 @@ EXAMPLES:
     tw open "Fix login bug"         # Open task in browser by title search
     tw action 123456                # Mark task as actioned
     tw unaction 123456              # Remove actioned status
+    tw unaction --all               # Remove actioned status from all tasks
     tw refresh                      # Clear all cached data
     tw refresh 123456               # Clear cache for specific task only
 
@@ -3024,13 +3048,18 @@ case "${1:-}" in
         mark_task_actioned "$1"
         ;;
     "unaction")
-        if [ -z "$2" ]; then
+        if [ "$2" = "--all" ]; then
+            shift # Remove 'unaction'
+            shift # Remove '--all'
+            unmark_all_tasks_actioned
+        elif [ -z "$2" ]; then
             echo "Error: Task ID is required"
-            echo "Usage: tw unaction {task_id}"
+            echo "Usage: tw unaction {task_id} or tw unaction --all"
             exit 1
+        else
+            shift # Remove 'unaction'
+            unmark_task_actioned "$1"
         fi
-        shift # Remove 'unaction'
-        unmark_task_actioned "$1"
         ;;
     "refresh")
         if [ -n "$2" ]; then
