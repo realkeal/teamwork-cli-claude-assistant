@@ -1,4 +1,4 @@
-# Teamwork CLI
+# Teamwork CLI with Claude AI assistant
 
 A comprehensive command-line interface for interacting with Teamwork.com project management system. Features task management, project selection, advanced filtering, and intelligent caching.
 
