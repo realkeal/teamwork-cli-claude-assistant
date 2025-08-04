@@ -1870,7 +1870,7 @@ get_tasks() {
                             echo -ne "\r\033[K" >&2
                             printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
                             printf "│ %-79s │\n" ""
-                            echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-66s" "") │"
+                            echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-68s" "") │"
                             wrap_text_for_table "$ai_summary"
                         else
                             echo -ne "\r\033[K" >&2
