@@ -847,6 +847,7 @@ format_task_title() {
     local title="$1"
     local task_id="$2"
     local updated_at="$3"
+    local level="${4:-0}"  # Task level for indentation (0 = top level)
     
     # Build status indicators
     local status_indicators=""
@@ -863,11 +864,22 @@ format_task_title() {
         fi
     fi
     
-    # Format title with status indicators
+    # Add indentation for subtasks
+    local indent=""
+    if [ "$level" -gt 0 ]; then
+        # Add "└─ " for subtasks
+        indent="└─ "
+        # Add additional spaces for deeper levels
+        for ((i=1; i<level; i++)); do
+            indent="   $indent"
+        done
+    fi
+    
+    # Format title with status indicators and indentation
     if [ -n "$status_indicators" ]; then
-        printf '\033[1m>> %s <<\033[0m %s' "$title" "$status_indicators"
+        printf '%s\033[1m>> %s <<\033[0m %s' "$indent" "$title" "$status_indicators"
     else
-        printf '\033[1m>> %s <<\033[0m' "$title"
+        printf '%s\033[1m>> %s <<\033[0m' "$indent" "$title"
     fi
 }
 
@@ -1203,6 +1215,75 @@ matches_tags_filter() {
     fi
 }
 
+# Function to fetch subtasks - simplified for better performance
+fetch_subtasks_simple() {
+    local task_ids="$1"
+    local auth_header="$2"
+    local user_id="$3"
+    local max_depth="${4:-3}"
+    
+    # Create temp file for results
+    local temp_file=$(mktemp)
+    local current_ids="$task_ids"
+    local level=1
+    
+    # Fetch subtasks level by level
+    while [ -n "$current_ids" ] && [ "$level" -le "$max_depth" ]; do
+        local next_ids=""
+        
+        # Fetch subtasks for each ID at current level
+        for task_id in $current_ids; do
+            if [ -n "$task_id" ]; then
+                # Fetch subtasks for this task
+                local response=$(curl -s -H "$auth_header" \
+                    "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/subtasks.json?pageSize=100" 2>/dev/null)
+                
+                if [ $? -eq 0 ] && [ -n "$response" ]; then
+                    # Extract subtasks assigned to user
+                    local subtasks=$(echo "$response" | jq -r --arg user_id "$user_id" --arg level "$level" '
+                        .tasks[]?
+                        | select(.assigneeUserIds[]? == ($user_id | tonumber))
+                        | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
+                        | {
+                            id: .id,
+                            name: .name,
+                            priority: .priority,
+                            dueDate: .dueDate,
+                            startDate: .startDate,
+                            description: .description,
+                            projectId: .projectId,
+                            tagIds: .tagIds,
+                            updatedAt: .updatedAt,
+                            parentTaskId: .parentTaskId,
+                            level: ($level | tonumber)
+                        }
+                    ')
+                    
+                    if [ -n "$subtasks" ]; then
+                        echo "$subtasks" >> "$temp_file"
+                        
+                        # Collect IDs for next level
+                        local new_ids=$(echo "$subtasks" | jq -r '.id' | tr '\n' ' ')
+                        next_ids="$next_ids $new_ids"
+                    fi
+                fi
+            fi
+        done
+        
+        # Move to next level
+        current_ids="$next_ids"
+        level=$((level + 1))
+    done
+    
+    # Output all results
+    if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
+        cat "$temp_file"
+    fi
+    
+    # Cleanup
+    rm -f "$temp_file"
+}
+
 # Function to get tasks
 get_tasks() {
     # Filter parameters
@@ -1214,6 +1295,9 @@ get_tasks() {
     local debug_mode="false"
     local order_by="duedate"  # Default ordering
     local clear_terminal="true"  # Default to clearing terminal
+    local include_subtasks="true"  # Default to including subtasks
+    local max_subtask_depth="${SUBTASK_MAX_DEPTH:-3}"  # Max depth from env or default to 3
+    local max_subtasks_per_parent="${SUBTASK_MAX_PER_PARENT:-50}"  # Max subtasks per parent
     
     # Parse flags
     shift # Remove 'tasks' from arguments
@@ -1253,6 +1337,14 @@ get_tasks() {
                 ;;
             --no-clear)
                 clear_terminal="false"
+                shift
+                ;;
+            --no-subtasks)
+                include_subtasks="false"
+                shift
+                ;;
+            --subtask-depth=*)
+                max_subtask_depth="${1#*=}"
                 shift
                 ;;
             --help)
@@ -1387,7 +1479,8 @@ get_tasks() {
             ;;
     esac
     
-    local tasks_data=$(echo "$response" | jq -r --arg user_id "$USER_ID" '
+    # Get initial tasks
+    local initial_tasks=$(echo "$response" | jq -r --arg user_id "$USER_ID" '
         .tasks[]
         | select(.assigneeUserIds[]? == ($user_id | tonumber))
         | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
@@ -1400,9 +1493,61 @@ get_tasks() {
             description: .description,
             projectId: .projectId,
             tagIds: .tagIds,
-            updatedAt: .updatedAt
+            updatedAt: .updatedAt,
+            parentTaskId: .parentTaskId,
+            level: 0
         }
-    ' | jq -s "$sort_expression")
+    ')
+    
+    # Fetch subtasks if enabled
+    if [ "$include_subtasks" = "true" ]; then
+        local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+        
+        if [ "$debug_mode" = "true" ]; then
+            echo "DEBUG: Fetching subtasks is enabled" >&2
+            echo "DEBUG: Initial tasks count: $(echo "$initial_tasks" | jq -s 'length')" >&2
+        fi
+        
+        # Get task IDs from initial tasks
+        local task_ids=$(echo "$initial_tasks" | jq -r '.id' | tr '\n' ' ')
+        
+        if [ "$debug_mode" = "true" ]; then
+            echo "DEBUG: Fetching subtasks for tasks: $task_ids" >&2
+            echo "DEBUG: Max depth: $max_subtask_depth, Max per parent: $max_subtasks_per_parent" >&2
+        fi
+        
+        # Check if we have cached subtasks
+        local subtask_cache_key="subtasks_${project_id}_${USER_ID}_depth${max_subtask_depth}"
+        local subtask_cache_file=$(get_cache_file "$subtask_cache_key")
+        local subtasks=""
+        
+        # Try to use cached subtasks if tasks haven't been updated
+        if [ -f "$subtask_cache_file" ] && is_task_data_current "$subtask_cache_file" "$project_id"; then
+            echo "Loading subtasks from cache..." >&2
+            subtasks=$(cat "$subtask_cache_file")
+        else
+            # Show progress indicator
+            echo "Fetching subtasks (max depth: $max_subtask_depth)..." >&2
+            
+            # Fetch all subtasks with simplified approach
+            subtasks=$(fetch_subtasks_simple "$task_ids" "$auth_header" "$USER_ID" "$max_subtask_depth")
+            
+            # Cache the subtasks
+            if [ -n "$subtasks" ]; then
+                echo "$subtasks" > "$subtask_cache_file"
+            fi
+        fi
+        
+        # Combine initial tasks and subtasks
+        local all_tasks="$initial_tasks"
+        if [ -n "$subtasks" ]; then
+            all_tasks=$(echo -e "$initial_tasks\n$subtasks")
+        fi
+        
+        local tasks_data=$(echo "$all_tasks" | jq -s "$sort_expression")
+    else
+        local tasks_data=$(echo "$initial_tasks" | jq -s "$sort_expression")
+    fi
     
     # Count total tasks found
     local task_count=$(echo "$tasks_data" | jq 'length')
@@ -1433,6 +1578,8 @@ get_tasks() {
         local description=$(echo "$task" | jq -r '.description // ""')
         local tag_ids=$(echo "$task" | jq -r '.tagIds // "[]"')
         local updated_at=$(echo "$task" | jq -r '.updatedAt // ""')
+        local parent_task_id=$(echo "$task" | jq -r '.parentTaskId // 0')
+        local task_level=$(echo "$task" | jq -r '.level // 0')
         local formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
         local formatted_start=$(echo "$start_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$start_date")
         
@@ -1475,7 +1622,7 @@ get_tasks() {
         local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
         
         # Format task title in bold with status indicators
-        local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at")
+        local formatted_title=$(format_task_title "$task_name" "$task_id" "$updated_at" "$task_level")
         
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
@@ -1728,6 +1875,8 @@ EXAMPLES:
     tw tasks --due=overdue          # Show overdue tasks
     tw tasks --order=start --summary # Show tasks by start date with summaries
     tw tasks --no-clear             # List tasks without resetting terminal first
+    tw tasks --no-subtasks          # List tasks without showing subtasks
+    tw tasks --subtask-depth=2      # Show subtasks up to 2 levels deep (default: 3)
     tw task 123456                  # View single task details by ID
     tw task "Fix login bug"         # View single task details by title search
     tw task 123456 --summary        # View single task with short AI summary
