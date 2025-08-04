@@ -1345,6 +1345,7 @@ get_tasks() {
     local tasks_data=$(echo "$response" | jq -r --arg user_id "$USER_ID" '
         .tasks[]
         | select(.assigneeUserIds[]? == ($user_id | tonumber))
+        | select(.status != "completed" and .status != "complete" and .status != "done" and .progress != 100)
         | {
             id: .id,
             name: .name,
