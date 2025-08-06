@@ -103,7 +103,6 @@ tw tasks --tags="urgent"          # Filter by tag name
 tw tasks --order=priority         # Sort by priority (high first)
 tw tasks --order=lastupdated      # Sort by last updated
 tw tasks --order=start            # Sort by start date
-tw tasks --no-clear               # Don't clear terminal before output
 tw tasks --subtask-depth=2        # Show subtasks up to 2 levels deep
 ```
 

@@ -915,7 +915,6 @@ project_wizard() {
     
     # Function to display projects list
     display_projects() {
-        clear
         echo "Select a project:"
         echo "Use up/down arrow keys to navigate, Enter to select, q to quit"
         echo
@@ -1649,7 +1648,6 @@ get_tasks() {
     local summary_mode=""
     local debug_mode="false"
     local order_by="duedate"  # Default ordering
-    local clear_terminal="true"  # Default to clearing terminal
     local include_subtasks="true"  # Default to including subtasks
     local max_subtask_depth="${SUBTASK_MAX_DEPTH:-3}"  # Max depth from env or default to 3
     local max_subtasks_per_parent="${SUBTASK_MAX_PER_PARENT:-50}"  # Max subtasks per parent
@@ -1688,10 +1686,6 @@ get_tasks() {
                 ;;
             --debug)
                 debug_mode="true"
-                shift
-                ;;
-            --no-clear)
-                clear_terminal="false"
                 shift
                 ;;
             --no-subtasks)
@@ -2163,11 +2157,7 @@ get_tasks() {
     # Count total tasks found
     local task_count=$(echo "$tasks_data" | jq 'length')
     
-    # Clear terminal if enabled (default behavior)
-    if [ "$clear_terminal" = "true" ]; then
-        # Full terminal reset: clear screen, scrollback buffer, and reset cursor
-        printf '\033[2J\033[3J\033[H'
-    fi
+    # Terminal clearing removed - no longer clearing screen
     
     # Display task summary
     echo "Found $task_count task(s) assigned to you."
@@ -2510,7 +2500,6 @@ TASK OPTIONS (for 'tasks' command):
     --summary            Add short AI summaries to task list
     --summary=long       Add detailed AI summaries to task list
     --debug              Show debug information about API data extraction
-    --no-clear           Skip resetting the terminal before displaying tasks
 
 SINGLE TASK OPTIONS (for 'task' command):
     --summary            Add short AI summary to task display
@@ -2540,7 +2529,6 @@ EXAMPLES:
     tw tasks --due=today            # Show tasks due today
     tw tasks --due=overdue          # Show overdue tasks
     tw tasks --order=start --summary # Show tasks by start date with summaries
-    tw tasks --no-clear             # List tasks without resetting terminal first
     tw tasks --no-subtasks          # List tasks without showing subtasks
     tw tasks --subtask-depth=2      # Show subtasks up to 2 levels deep (default: 3)
     tw task 123456                  # View single task details by ID
