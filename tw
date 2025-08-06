@@ -5,6 +5,19 @@
 
 set -e
 
+# Cleanup function
+cleanup() {
+    # Kill spinner if it's running
+    if [ -n "$SPINNER_PID" ]; then
+        kill $SPINNER_PID 2>/dev/null
+        wait $SPINNER_PID 2>/dev/null
+        printf "\r\033[K" >&2
+    fi
+}
+
+# Set trap to cleanup on exit
+trap cleanup EXIT INT TERM
+
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -14,6 +27,48 @@ mkdir -p "$CACHE_DIR"
 
 # Cache expiry time in seconds (30 minutes)
 CACHE_EXPIRY=1800
+
+# Spinner characters
+SPINNER_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNER_PID=""
+
+# Function to show spinner
+show_spinner() {
+    local message="$1"
+    local i=0
+    # Check if parent process is still alive
+    while kill -0 $$ 2>/dev/null; do
+        printf "\r%s %s" "${SPINNER_CHARS:i:1}" "$message" >&2
+        i=$(( (i + 1) % ${#SPINNER_CHARS} ))
+        sleep 0.1
+    done
+}
+
+# Function to start spinner in background
+start_spinner() {
+    # Stop any existing spinner first
+    stop_spinner
+    
+    local message="${1:-Loading...}"
+    
+    # Only start spinner if stderr is a terminal
+    if [ -t 2 ]; then
+        show_spinner "$message" &
+        SPINNER_PID=$!
+        disown $SPINNER_PID 2>/dev/null  # Disown to prevent hang on exit
+    fi
+}
+
+# Function to stop spinner
+stop_spinner() {
+    if [ -n "$SPINNER_PID" ]; then
+        # Kill the spinner process
+        kill $SPINNER_PID 2>/dev/null
+        # Don't wait for it since we disowned it
+        SPINNER_PID=""
+        printf "\r\033[K" >&2  # Clear the line
+    fi
+}
 
 # Function to get cache file path
 get_cache_file() {
@@ -597,25 +652,7 @@ check_claude_available() {
     return 0
 }
 
-# Function to show progress bar
-show_progress_bar() {
-    local current="$1"
-    local total="$2"
-    local width=20
-    local percentage=$((current * 100 / total))
-    local filled=$((current * width / total))
-    local empty=$((width - filled))
-    
-    local bar=""
-    for ((i=0; i<filled; i++)); do
-        bar+="█"
-    done
-    for ((i=0; i<empty; i++)); do
-        bar+="░"
-    done
-    
-    echo -ne "\rGenerating AI summary $current of $total [$bar] ${percentage}% complete..." >&2
-}
+# Removed progress bar function - using spinner instead
 
 # Function to fetch task with latest 5 comments for AI context
 get_task_with_comments() {
@@ -915,6 +952,9 @@ project_wizard() {
     
     # Function to display projects list
     display_projects() {
+        # Move cursor to top and clear screen below
+        printf "\033[H\033[J"
+        
         echo "Select a project:"
         echo "Use up/down arrow keys to navigate, Enter to select, q to quit"
         echo
@@ -1817,14 +1857,15 @@ get_tasks() {
                     local tasklist_tasks_json="[]"
                     local processed=0
                     
-                    # Fetch tasks from each tasklist with progress indicator
+                    # Fetch tasks from each tasklist with spinner
                     local total_tasklists=$(echo "$tasklists" | wc -l)
                     echo "Found $total_tasklists tasklists to check..."
+                    
+                    start_spinner "Checking tasklists..."
                     
                     while IFS= read -r tasklist_id; do
                         if [ -n "$tasklist_id" ] && [ "$tasklist_id" != "null" ]; then
                             processed=$((processed + 1))
-                            echo -ne "Checking tasklist $processed/$total_tasklists...\r" >&2
                             
                             # Add timeout and filter by assignee at API level
                             local tasklist_response
@@ -1837,19 +1878,27 @@ get_tasks() {
                                     if [ "$task_count" -gt 0 ]; then
                                         tasklist_tasks_json=$(echo "$tasklist_tasks_json" "$tasks_from_list" | jq -s 'add' 2>/dev/null || echo "$tasklist_tasks_json")
                                         if [ "$debug_mode" = "true" ]; then
+                                            # Stop spinner before debug output
+                                            stop_spinner
                                             echo "DEBUG: Found $task_count tasks in tasklist $tasklist_id" >&2
+                                            # Restart spinner
+                                            start_spinner "Checking tasklists..."
                                         fi
                                     fi
                                 fi
                             else
                                 if [ "$debug_mode" = "true" ]; then
+                                    # Stop spinner before debug output
+                                    stop_spinner
                                     echo "DEBUG: Timeout fetching from tasklist $tasklist_id" >&2
+                                    # Restart spinner
+                                    start_spinner "Checking tasklists..."
                                 fi
                             fi
                         fi
                     done <<< "$tasklists"
                     
-                    echo -ne "\r" >&2  # Clear progress indicator
+                    stop_spinner
                     
                     # Combine regular project tasks with tasklist tasks, removing duplicates
                     if [ -n "$tasklist_tasks_json" ] && [ "$tasklist_tasks_json" != "[]" ]; then
@@ -1904,10 +1953,11 @@ get_tasks() {
                         local processed=0
                         local total_tasklists=$(echo "$tasklists" | wc -l)
                         
+                        start_spinner "Checking $total_tasklists tasklists..."
+                        
                         while IFS= read -r tasklist_id; do
                             if [ -n "$tasklist_id" ] && [ "$tasklist_id" != "null" ]; then
                                 processed=$((processed + 1))
-                                echo -ne "Checking tasklist $processed/$total_tasklists...\r" >&2
                                 
                                 local tasklist_response
                                 if tasklist_response=$(curl -s --max-time 10 -H "$auth_header" \
@@ -1924,7 +1974,7 @@ get_tasks() {
                             fi
                         done <<< "$tasklists"
                         
-                        echo -ne "\r" >&2
+                        stop_spinner
                         
                         # Combine project tasks with tasklist tasks
                         if [ -n "$tasklist_tasks_json" ] && [ "$tasklist_tasks_json" != "[]" ]; then
@@ -2303,43 +2353,37 @@ get_tasks() {
         
         # Show AI summary if requested
         if [ -n "$summary_mode" ]; then
-            # Show progress indicator for AI summary generation
-            show_progress_bar "$task_counter" "$total_tasks"
+            # Start spinner for AI summary generation
+            start_spinner "Generating AI summary $task_counter of $total_tasks..."
             
             local task_with_comments=$(get_task_with_comments "$task_id")
             if [ -n "$task_with_comments" ]; then
                 case "$summary_mode" in
                     "short")
                         local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                        stop_spinner
                         if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                            # Clear progress line and show summary
-                            echo -ne "\r\033[K" >&2
                             printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
                             printf "│ %-79s │\n" ""
                             echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-68s" "") │"
                             wrap_text_for_table "$ai_summary"
-                        else
-                            echo -ne "\r\033[K" >&2
                         fi
                         ;;
                     "long")
                         local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                        stop_spinner
                         if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                            # Clear progress line and show summary
-                            echo -ne "\r\033[K" >&2
                             # Check if tags were displayed to determine separator placement
                             local has_tags="false"
                             if [ -n "$formatted_tags" ]; then
                                 has_tags="true"
                             fi
                             format_long_summary "$ai_summary" "$has_tags"
-                        else
-                            echo -ne "\r\033[K" >&2
                         fi
                         ;;
                 esac
             else
-                echo -ne "\r\033[K" >&2
+                stop_spinner
             fi
         fi
         
@@ -2348,10 +2392,8 @@ get_tasks() {
         echo
     done <<< "$regular_tasks"
     
-    # Clear any remaining progress indicator
-    if [ -n "$summary_mode" ] && [ "$total_tasks" -gt 0 ]; then
-        echo -ne "\r\033[K" >&2
-    fi
+    # Stop spinner if still running
+    stop_spinner
 }
 
 # Function to find task by title
@@ -2933,9 +2975,9 @@ show_single_task() {
         if [ -n "$task_with_comments" ]; then
             case "$summary_mode" in
                 "short")
-                    echo -ne "Generating AI summary..." >&2
+                    start_spinner "Generating AI summary..."
                     local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
-                    echo -ne "\r\033[K" >&2
+                    stop_spinner
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                         printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
                         printf "│ %-79s │\n" ""
@@ -2944,9 +2986,9 @@ show_single_task() {
                     fi
                     ;;
                 "long")
-                    echo -ne "Generating AI summary..." >&2
+                    start_spinner "Generating AI summary..."
                     local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
-                    echo -ne "\r\033[K" >&2
+                    stop_spinner
                     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
                         # Check if tags were displayed to determine separator placement
                         local has_tags="false"
@@ -3051,9 +3093,9 @@ show_task_summary() {
     printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
     
     # Generate and display long AI summary
-    echo -ne "Generating AI summary..." >&2
+    start_spinner "Generating AI summary..."
     local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at")
-    echo -ne "\r\033[K" >&2  # Clear the progress line
+    stop_spinner
     
     if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
         format_long_summary "$ai_summary" "false"
