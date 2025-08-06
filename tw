@@ -1694,7 +1694,7 @@ get_tasks() {
     local max_subtask_depth="${SUBTASK_MAX_DEPTH:-3}"  # Max depth from env or default to 3
     local max_subtasks_per_parent="${SUBTASK_MAX_PER_PARENT:-50}"  # Max subtasks per parent
     local comments_mode="3"  # Comments display mode - default to showing 3 comments
-    local interactive_mode="false"  # Interactive task processing mode
+    local comments_limit="3"  # Number of comments to show (when comments_mode is set)
     
     # Parse flags
     shift # Remove 'tasks' from arguments
@@ -1748,18 +1748,17 @@ get_tasks() {
                 ;;
             --comments=*)
                 comments_mode="${1#*=}"
+                comments_limit="${1#*=}"
                 shift
                 ;;
             --comments)
                 comments_mode="3"
+                comments_limit="3"
                 shift
                 ;;
             --no-comments)
                 comments_mode=""
-                shift
-                ;;
-            --interactive)
-                interactive_mode="true"
+                comments_limit=""
                 shift
                 ;;
             --help)
@@ -2192,7 +2191,7 @@ get_tasks() {
         echo
     fi
     
-    # Format and display regular tasks
+    # Format and display regular tasks (only if not in interactive mode)
     local total_tasks=$(echo "$regular_tasks" | grep -c '^{')
     local task_counter=0
     
@@ -2290,145 +2289,8 @@ get_tasks() {
     
     # Stop spinner if still running
     stop_spinner
-    
-    # If interactive mode is enabled, start the interactive session
-    if [ "$interactive_mode" = "true" ]; then
-        interactive_task_session "$regular_tasks" "$priority_filter" "$due_filter" "$start_filter" "$tags_filter" "$order_by"
-    fi
 }
 
-# Function to run interactive task processing session
-interactive_task_session() {
-    local tasks_data="$1"
-    local priority_filter="$2"  
-    local due_filter="$3"
-    local start_filter="$4"
-    local tags_filter="$5"
-    local order_by="$6"
-    
-    # Convert tasks data to array
-    local tasks_array=()
-    while IFS= read -r task; do
-        [ -n "$task" ] && tasks_array+=("$task")
-    done <<< "$tasks_data"
-    
-    local total_tasks=${#tasks_array[@]}
-    
-    if [ $total_tasks -eq 0 ]; then
-        echo "No tasks available for interactive mode."
-        return 0
-    fi
-    
-    echo
-    echo "=== Interactive Task Mode ==="
-    echo "Processing $total_tasks tasks. Use the menu to take actions on each task."
-    echo
-    
-    local current_index=0
-    local session_state_file="$CACHE_DIR/interactive_session.json"
-    
-    # Load previous session state if exists
-    if [ -f "$session_state_file" ]; then
-        local saved_index=$(jq -r '.currentIndex // 0' "$session_state_file" 2>/dev/null)
-        if [[ "$saved_index" =~ ^[0-9]+$ ]] && [ "$saved_index" -lt "$total_tasks" ]; then
-            current_index=$saved_index
-            echo "Resuming from task $((current_index + 1)) of $total_tasks"
-            echo
-        fi
-    fi
-    
-    # Main interactive loop
-    while [ $current_index -lt $total_tasks ]; do
-        local current_task="${tasks_array[$current_index]}"
-        
-        # Extract task details
-        local task_id=$(echo "$current_task" | jq -r '.id')
-        local task_name=$(echo "$current_task" | jq -r '.name')
-        local priority=$(echo "$current_task" | jq -r '.priority // "Normal"')
-        local due_date=$(echo "$current_task" | jq -r '.dueDate // "No due date"')
-        local project_name=$(echo "$current_task" | jq -r '.projectName // "Unknown Project"')
-        
-        # Save current session state
-        jq -n --arg index "$current_index" '{currentIndex: ($index | tonumber)}' > "$session_state_file"
-        
-        # Display current task with full details
-        clear
-        echo "=== Task $((current_index + 1)) of $total_tasks ==="
-        echo
-        
-        # Show full task details using existing function with AI summary
-        show_single_task "$task_id"
-        echo
-        
-        # Show action menu at the bottom
-        echo "Choose an action:"
-        echo "[1] Mark Complete    [2] Mark Actioned    [3] Add Comment     [4] Open in Browser"
-        echo "[5] Show Comments    [6] Skip to Next     [7] Previous Task   [8] Exit Interactive"
-        echo
-        
-        # Get user choice
-        read -p "Choice (1-8): " choice
-        echo
-        
-        case "$choice" in
-            1)
-                complete_task_api "$task_id"
-                ;;
-            2)
-                mark_task_actioned "$task_id"
-                ;;
-            3)
-                add_task_comment "$task_id"
-                ;;
-            4)
-                open_task "$task_id"
-                ;;
-            5)
-                show_task_comments "$task_id"
-                echo
-                read -p "Press Enter to continue..."
-                ;;
-            6)
-                echo "Skipping task..."
-                ;;
-            7)
-                if [ $current_index -gt 0 ]; then
-                    current_index=$((current_index - 1))
-                    echo "Going to previous task..."
-                    continue
-                else
-                    echo "Already at first task."
-                    sleep 1
-                    continue
-                fi
-                ;;
-            8)
-                echo "Exiting interactive mode..."
-                rm -f "$session_state_file"
-                return 0
-                ;;
-            *)
-                echo "Invalid choice. Please select 1-8."
-                sleep 1
-                continue
-                ;;
-        esac
-        
-        # Move to next task (except for previous action)
-        if [ "$choice" != "7" ]; then
-            current_index=$((current_index + 1))
-        fi
-        
-        # Pause between actions (except for skip and previous)
-        if [ "$choice" != "6" ] && [ "$choice" != "7" ]; then
-            sleep 1
-        fi
-    done
-    
-    # Session completed
-    echo "Interactive session completed! All tasks processed."
-    rm -f "$session_state_file"
-}
 
 # Function to mark task as complete via Teamwork API
 complete_task_api() {
@@ -2719,7 +2581,6 @@ show_help() {
     printf "   --comments                 Show latest 3 comments per task (default)\n"
     printf "   --comments=N               Show latest N comments per task\n"
     printf "   --no-comments              Hide comments\n"
-    printf "   --interactive              Interactive task processing mode\n"
     printf "   --timezone=VALUE           Set display timezone (UTC, Australia/Melbourne)\n\n"
     
     printf "\033[1mSINGLE TASK OPTIONS\033[0m (for 'tw task')\n"
@@ -2749,7 +2610,7 @@ show_help() {
     printf "   tw tasks --priority=high --due=overdue   # Urgent tasks only\n"
     printf "   tw tasks --no-comments                   # Hide comments\n"
     printf "   tw action 123456                         # Mark as actioned\n"
-    printf "   tw tasks --interactive                   # Interactive task processing\n\n"
+    printf "\n"
 }
 
 # Function to generate HTML for task display
