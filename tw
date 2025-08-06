@@ -2548,6 +2548,7 @@ SINGLE TASK OPTIONS (for 'task' command):
     --summary=long       Add detailed AI summary to task display
     --comments           Show all comments for the task
     --comments=N         Show latest N comments (e.g., --comments=3)
+    --output=html        Generate HTML output and open in browser automatically
     --debug              Show debug information about API data extraction
 
 FEATURES:
@@ -2579,6 +2580,7 @@ EXAMPLES:
     tw task "Fix login bug" --summary=long # View single task with detailed AI summary
     tw task 123456 --comments       # View single task with all comments
     tw task 123456 --comments=3     # View single task with latest 3 comments
+    tw task 123456 --output=html    # View task as HTML in browser
     tw summary 123456               # Get detailed AI summary for task
     tw summary "Fix login bug"      # Get AI summary by task title
     tw open 123456                  # Open task in browser by ID
@@ -2793,6 +2795,531 @@ format_task_comments() {
     done
 }
 
+# Function to generate HTML for task display
+generate_task_html() {
+    local task_data="$1"
+    local task_id="$2" 
+    local summary_mode="$3"
+    local comments_mode="$4"
+    local comments_limit="$5"
+    local debug_mode="$6"
+    
+    # Extract task details
+    local task_name=$(echo "$task_data" | jq -r '.name // "Unknown Task"')
+    local due_date=$(echo "$task_data" | jq -r '.dueDate // "No due date"')
+    local start_date=$(echo "$task_data" | jq -r '.startDate // "No start date"')
+    local priority=$(echo "$task_data" | jq -r '.priority // "Normal"')
+    local description=$(echo "$task_data" | jq -r '.description // ""')
+    local tag_ids=$(echo "$task_data" | jq -r '.tagIds // "[]"')
+    local updated_at=$(echo "$task_data" | jq -r '.updatedAt // ""')
+    local created_at=$(echo "$task_data" | jq -r '.createdAt // ""')
+    local project_id=$(echo "$task_data" | jq -r '.projectId // ""')
+    
+    # Format dates
+    local formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
+    local formatted_start=$(echo "$start_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$start_date")
+    
+    # Format tags if present
+    local formatted_tags=""
+    if [ "$tag_ids" != "[]" ] && [ "$tag_ids" != "null" ]; then
+        local tags_lookup=$(fetch_tags "$project_id")
+        formatted_tags=$(format_tags "$tag_ids" "$tags_lookup")
+    fi
+    
+    # Priority styling
+    local priority_class=""
+    local priority_display="NORMAL"
+    case "$priority" in
+        "high") priority_display="HIGH"; priority_class="high" ;;
+        "medium") priority_display="MEDIUM"; priority_class="medium" ;;
+        "low") priority_display="LOW"; priority_class="low" ;;
+        *) priority_display="NORMAL"; priority_class="normal" ;;
+    esac
+    
+    # Check if due date is overdue
+    local due_class=""
+    if [ "$due_date" != "No due date" ] && [ "$due_date" != "null" ]; then
+        local current_date=$(date +%Y-%m-%d)
+        local due_date_only=$(echo "$due_date" | sed 's/T.*//')
+        if [[ "$due_date_only" < "$current_date" ]]; then
+            due_class="overdue"
+        fi
+    fi
+    
+    # Build task URL
+    local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+    
+    # Start HTML generation
+    cat << EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task #$task_id - $task_name</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            line-height: 1.6; 
+            margin: 0; 
+            padding: 20px; 
+            background-color: #f5f5f5; 
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 8px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+            overflow: hidden;
+        }
+        .header { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white; 
+            padding: 20px; 
+        }
+        .task-title { 
+            font-size: 1.8em; 
+            font-weight: bold; 
+            margin: 0; 
+        }
+        .task-id { 
+            opacity: 0.8; 
+            font-size: 0.9em; 
+        }
+        .content { 
+            padding: 20px; 
+        }
+        .field { 
+            margin-bottom: 15px; 
+        }
+        .field-label { 
+            font-weight: bold; 
+            color: #333; 
+            display: inline-block; 
+            width: 100px; 
+        }
+        .priority { 
+            padding: 4px 8px; 
+            border-radius: 4px; 
+            font-weight: bold; 
+            font-size: 0.8em; 
+        }
+        .priority.high { 
+            background-color: #ffebee; 
+            color: #c62828; 
+            border: 1px solid #ef5350; 
+        }
+        .priority.medium { 
+            background-color: #fff3e0; 
+            color: #ef6c00; 
+            border: 1px solid #ff9800; 
+        }
+        .priority.low { 
+            background-color: #e8f5e8; 
+            color: #2e7d32; 
+            border: 1px solid #4caf50; 
+        }
+        .priority.normal { 
+            background-color: #f5f5f5; 
+            color: #666; 
+            border: 1px solid #ccc; 
+        }
+        .overdue { 
+            color: #c62828; 
+            font-weight: bold; 
+        }
+        .description { 
+            background-color: #f9f9f9; 
+            border-left: 4px solid #667eea; 
+            padding: 15px; 
+            margin: 15px 0; 
+            white-space: pre-wrap; 
+        }
+        .tags { 
+            display: flex; 
+            gap: 5px; 
+            flex-wrap: wrap; 
+            margin-top: 5px; 
+        }
+        .tag { 
+            background-color: #e3f2fd; 
+            color: #1976d2; 
+            padding: 2px 8px; 
+            border-radius: 12px; 
+            font-size: 0.8em; 
+        }
+        .url-link { 
+            color: #1976d2; 
+            text-decoration: none; 
+            word-break: break-all; 
+        }
+        .url-link:hover { 
+            text-decoration: underline; 
+        }
+        .ai-summary { 
+            background-color: #f3e5f5; 
+            border-left: 4px solid #9c27b0; 
+            padding: 15px; 
+            margin: 15px 0; 
+        }
+        .ai-summary-title { 
+            font-weight: bold; 
+            color: #7b1fa2; 
+            margin-bottom: 15px; 
+            font-size: 1.1em;
+        }
+        .summary-section, .next-steps-section {
+            margin-bottom: 15px;
+        }
+        .summary-section h4, .next-steps-section h4 {
+            color: #7b1fa2;
+            margin: 0 0 10px 0;
+            font-size: 1em;
+            font-weight: 600;
+        }
+        .summary-section p {
+            margin: 5px 0;
+            line-height: 1.5;
+        }
+        .next-steps-section ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .next-steps-section li {
+            margin-bottom: 5px;
+            line-height: 1.5;
+        }
+        .comments-section { 
+            margin-top: 20px; 
+        }
+        .comments-title { 
+            font-size: 1.2em; 
+            font-weight: bold; 
+            margin-bottom: 15px; 
+            color: #333; 
+        }
+        .comment { 
+            border: 1px solid #e0e0e0; 
+            border-radius: 8px; 
+            margin-bottom: 10px; 
+            overflow: hidden; 
+        }
+        .comment-header { 
+            background-color: #f8f9fa; 
+            padding: 10px 15px; 
+            font-size: 0.9em; 
+            color: #666; 
+        }
+        .comment-author { 
+            font-weight: bold; 
+            color: #333; 
+        }
+        .comment-body { 
+            padding: 15px; 
+            white-space: pre-wrap; 
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 class="task-title">$task_name</h1>
+            <div class="task-id">#$task_id</div>
+        </div>
+        <div class="content">
+            <div class="field">
+                <span class="field-label">Priority:</span>
+                <span class="priority $priority_class">$priority_display</span>
+            </div>
+            
+            <div class="field">
+                <span class="field-label">Due:</span>
+                <span class="$([ "$due_class" = "overdue" ] && echo "overdue")">$formatted_due</span>
+            </div>
+EOF
+
+    # Add start date if set
+    if [ "$start_date" != "No start date" ] && [ "$start_date" != "null" ]; then
+        echo "            <div class=\"field\">"
+        echo "                <span class=\"field-label\">Start:</span>"
+        echo "                <span>$formatted_start</span>"
+        echo "            </div>"
+    fi
+    
+    # Add description if it exists
+    if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+        echo "            <div class=\"field\">"
+        echo "                <span class=\"field-label\">Description:</span>"
+        echo "                <div class=\"description\">$(echo "$description" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</div>"
+        echo "            </div>"
+    fi
+    
+    # Add URL
+    echo "            <div class=\"field\">"
+    echo "                <span class=\"field-label\">URL:</span>"
+    echo "                <a href=\"$task_url\" class=\"url-link\" target=\"_blank\">$task_url</a>"
+    echo "            </div>"
+    
+    # Add tags if they exist
+    if [ -n "$formatted_tags" ]; then
+        echo "            <div class=\"field\">"
+        echo "                <span class=\"field-label\">Tags:</span>"
+        echo "                <div class=\"tags\">"
+        # Convert formatted_tags to individual tag spans
+        echo "$formatted_tags" | tr ',' '\n' | while read -r tag; do
+            tag=$(echo "$tag" | sed 's/^ *//; s/ *$//')  # Trim whitespace
+            if [ -n "$tag" ]; then
+                echo "                    <span class=\"tag\">$tag</span>"
+            fi
+        done
+        echo "                </div>"
+        echo "            </div>"
+    fi
+    
+    # Add AI summary if requested
+    if [ -n "$summary_mode" ]; then
+        local task_with_comments=$(get_task_with_comments "$task_id")
+        if [ -n "$task_with_comments" ]; then
+            case "$summary_mode" in
+                "short"|"long")
+                    local ai_summary=""
+                    if [ "$summary_mode" = "short" ]; then
+                        ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode" 2>/dev/null)
+                    else
+                        ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode" 2>/dev/null)
+                    fi
+                    
+                    if [ -n "$ai_summary" ]; then
+                        echo "            <div class=\"ai-summary\">"
+                        echo "                <div class=\"ai-summary-title\">🤖 AI Analysis</div>"
+                        
+                        # Parse the AI summary to handle structured sections
+                        # First, split the summary into sections
+                        local summary_part=""
+                        local next_steps_part=""
+                        local in_next_steps=false
+                        
+                        while IFS= read -r line; do
+                            if [[ "$line" =~ ^AI\ Summary: ]]; then
+                                # Extract content after "AI Summary: "
+                                local content="${line#AI Summary: }"
+                                if [ -n "$content" ]; then
+                                    summary_part="$summary_part$content\n"
+                                fi
+                                in_next_steps=false
+                            elif [[ "$line" =~ ^Next\ Steps: ]]; then
+                                in_next_steps=true
+                                # Extract content after "Next Steps: " if any
+                                local content="${line#Next Steps: }"
+                                if [ -n "$content" ] && [ "$content" != "$line" ]; then
+                                    next_steps_part="$next_steps_part$content\n"
+                                fi
+                            elif [ -n "$line" ]; then
+                                # Handle regular content lines
+                                if [ "$in_next_steps" = true ]; then
+                                    next_steps_part="$next_steps_part$line\n"
+                                else
+                                    summary_part="$summary_part$line\n"
+                                fi
+                            fi
+                        done <<< "$ai_summary"
+                        
+                        # Output the summary section if it exists
+                        if [ -n "$summary_part" ]; then
+                            echo "                <div class=\"summary-section\">"
+                            echo "                    <h4>Summary</h4>"
+                            echo -e "$summary_part" | while IFS= read -r line; do
+                                if [ -n "$line" ]; then
+                                    echo "                    <p>$(echo "$line" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</p>"
+                                fi
+                            done
+                            echo "                </div>"
+                        fi
+                        
+                        # Output the next steps section if it exists
+                        if [ -n "$next_steps_part" ]; then
+                            echo "                <div class=\"next-steps-section\">"
+                            echo "                    <h4>Next Steps</h4>"
+                            echo "                    <ul>"
+                            echo -e "$next_steps_part" | while IFS= read -r line; do
+                                if [ -n "$line" ]; then
+                                    # Remove "- " prefix if present
+                                    if [[ "$line" =~ ^-\  ]]; then
+                                        local item="${line#- }"
+                                        echo "                        <li>$(echo "$item" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</li>"
+                                    else
+                                        echo "                        <li>$(echo "$line" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</li>"
+                                    fi
+                                fi
+                            done
+                            echo "                    </ul>"
+                            echo "                </div>"
+                        fi
+                        
+                        echo "            </div>"
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+    
+    # Add comments if requested
+    if [ -n "$comments_mode" ]; then
+        generate_comments_html "$task_id" "$comments_limit"
+    fi
+    
+    cat << EOF
+        </div>
+    </div>
+</body>
+</html>
+EOF
+}
+
+# Function to generate HTML for comments
+generate_comments_html() {
+    local task_id="$1"
+    local comments_limit="$2"
+    
+    # Fetch comments using the same logic as format_task_comments
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local page_size="50"
+    
+    if [ "$comments_limit" != "all" ] && [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
+        local requested_limit="$comments_limit"
+        if [ "$requested_limit" -lt 50 ]; then
+            page_size="50"
+        else
+            page_size="$requested_limit"
+        fi
+    fi
+    
+    local comments_response=$(curl -s -H "$auth_header" \
+        "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=$page_size&orderMode=desc" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
+    
+    if [ $? -ne 0 ] || [ -z "$comments_response" ]; then
+        return 1
+    fi
+    
+    local error=$(echo "$comments_response" | jq -r '.error // empty')
+    if [ -n "$error" ]; then
+        return 1
+    fi
+    
+    local comments_data=$(echo "$comments_response" | jq -r '.comments // []')
+    local total_comments=$(echo "$comments_data" | jq 'length')
+    
+    if [ "$total_comments" -eq 0 ]; then
+        return 0
+    fi
+    
+    # Apply limit if specified
+    local display_comments=""
+    if [ "$comments_limit" = "all" ]; then
+        display_comments="$comments_data"
+    elif [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
+        local limit_num="$comments_limit"
+        if [ "$limit_num" -ge "$total_comments" ]; then
+            display_comments="$comments_data"
+        else
+            display_comments=$(echo "$comments_data" | jq ".[0:$limit_num]")
+        fi
+    else
+        display_comments="$comments_data"
+    fi
+    
+    # Create user cache for comments
+    local user_cache_file=$(mktemp)
+    local user_ids=$(echo "$display_comments" | jq -r '.[].postedByUserId // empty' | sort -u)
+    
+    if [ -n "$user_ids" ]; then
+        echo "$user_ids" | while read -r user_id; do
+            if [ -n "$user_id" ] && [ "$user_id" != "null" ]; then
+                local user_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/people/$user_id.json" 2>/dev/null)
+                if [ $? -eq 0 ] && [ -n "$user_response" ]; then
+                    local first_name=$(echo "$user_response" | jq -r '.person.firstName // ""')
+                    local last_name=$(echo "$user_response" | jq -r '.person.lastName // ""')
+                    local full_name=""
+                    
+                    if [ -n "$first_name" ] && [ -n "$last_name" ]; then
+                        full_name="$first_name $last_name"
+                    elif [ -n "$first_name" ]; then
+                        full_name="$first_name"
+                    elif [ -n "$last_name" ]; then
+                        full_name="$last_name"
+                    else
+                        full_name="User $user_id"
+                    fi
+                    
+                    echo "$user_id|$full_name" >> "$user_cache_file"
+                fi
+            fi
+        done
+    fi
+    
+    echo "            <div class=\"comments-section\">"
+    if [ "$comments_limit" = "all" ]; then
+        echo "                <div class=\"comments-title\">Comments ($total_comments total)</div>"
+    elif [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
+        local limit_num="$comments_limit"
+        if [ "$limit_num" -ge "$total_comments" ]; then
+            echo "                <div class=\"comments-title\">Comments (showing all $total_comments)</div>"
+        else
+            echo "                <div class=\"comments-title\">Comments (showing latest $limit_num of $total_comments)</div>"
+        fi
+    else
+        echo "                <div class=\"comments-title\">Comments</div>"
+    fi
+    
+    # Display each comment
+    echo "$display_comments" | jq -r '.[] | 
+        (.postedDateTime // .createdDate // .dateCreated // "Unknown date") + "|" + 
+        ((.postedByUserId // "unknown") | tostring) + "|" + 
+        (.body // "No content")' | while IFS='|' read -r date_part user_id_part content_part; do
+        
+        # Format date
+        local formatted_date="$date_part"
+        if [[ "$date_part" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            if [[ "$date_part" =~ Z$ ]]; then
+                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$date_part" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+            elif [[ "$date_part" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
+                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${date_part//:}" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+            else
+                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$date_part" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
+            fi
+            
+            if [ -z "$formatted_date" ]; then
+                formatted_date="$date_part"
+            fi
+        fi
+        
+        # Get author name
+        local author_name="Unknown User"
+        if [ "$user_id_part" != "unknown" ] && [ -f "$user_cache_file" ]; then
+            author_name=$(grep "^$user_id_part|" "$user_cache_file" | cut -d'|' -f2)
+            if [ -z "$author_name" ]; then
+                author_name="Unknown User"
+            fi
+        fi
+        
+        # Escape HTML in content
+        local escaped_content=$(echo "$content_part" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        
+        echo "                <div class=\"comment\">"
+        echo "                    <div class=\"comment-header\">"
+        echo "                        <span class=\"comment-author\">$author_name</span> • $formatted_date"
+        echo "                    </div>"
+        echo "                    <div class=\"comment-body\">$escaped_content</div>"
+        echo "                </div>"
+    done
+    
+    echo "            </div>"
+    
+    # Clean up temp file
+    rm -f "$user_cache_file"
+}
+
 # Function to show single task details
 show_single_task() {
     local input="$1"
@@ -2803,6 +3330,7 @@ show_single_task() {
     local debug_mode="false"
     local comments_mode=""
     local comments_limit=""
+    local output_format=""
     local remaining_args=()
     
     while [[ $# -gt 0 ]]; do
@@ -2827,6 +3355,10 @@ show_single_task() {
                 ;;
             --debug)
                 debug_mode="true"
+                shift
+                ;;
+            --output=*)
+                output_format="${1#*=}"
                 shift
                 ;;
             --help)
@@ -2955,6 +3487,42 @@ show_single_task() {
     
     # Build task URL
     local task_url="$TEAMWORK_URL/app/tasks/$task_id"
+    
+    # Check if HTML output is requested
+    if [ "$output_format" = "html" ]; then
+        # Generate HTML content and save to temporary file with proper extension
+        local html_file="/tmp/teamwork_task_${task_id}.html"
+        
+        # Generate HTML using the separate function
+        generate_task_html "$task_data" "$task_id" "$summary_mode" "$comments_mode" "$comments_limit" "$debug_mode" > "$html_file"
+        
+        # Open in browser
+        echo "Opening task #$task_id in browser..."
+        if command -v open >/dev/null 2>&1; then
+            # macOS - try to open with default browser
+            open "$html_file" 2>/dev/null || {
+                echo "HTML file created: $html_file"
+                echo "Please open this file manually in your browser."
+            }
+        elif command -v xdg-open >/dev/null 2>&1; then
+            # Linux
+            xdg-open "$html_file" 2>/dev/null || {
+                echo "HTML file created: $html_file"
+                echo "Please open this file manually in your browser."
+            }
+        elif command -v start >/dev/null 2>&1; then
+            # Windows
+            start "$html_file" 2>/dev/null || {
+                echo "HTML file created: $html_file"
+                echo "Please open this file manually in your browser."
+            }
+        else
+            echo "HTML file created: $html_file"
+            echo "Please open this file manually in your browser."
+        fi
+        
+        return 0
+    fi
     
     # Display status indicators above the task table if they exist
     if [ -n "$status_indicators" ]; then
