@@ -2670,28 +2670,44 @@ format_task_comments() {
     printf "│ %-25s │ %-15s │ %-33s │\n" "Date" "Author" "Content"
     printf "├───────────────────────────┼─────────────────┼───────────────────────────────────┤\n"
     
-    # Note: Author information will be extracted directly from comment objects
+    # Create a temporary file to store user information cache
+    local user_cache_file=$(mktemp)
+    trap "rm -f $user_cache_file" EXIT
+    
+    # Extract unique user IDs from comments and fetch user information
+    local user_ids=$(echo "$display_comments" | jq -r '.[].postedByUserId // empty' | sort -u)
+    
+    if [ -n "$user_ids" ]; then
+        # Fetch user information for all unique user IDs
+        echo "$user_ids" | while read -r user_id; do
+            if [ -n "$user_id" ] && [ "$user_id" != "null" ]; then
+                local user_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/people/$user_id.json" 2>/dev/null)
+                if [ $? -eq 0 ] && [ -n "$user_response" ]; then
+                    local first_name=$(echo "$user_response" | jq -r '.person.firstName // ""')
+                    local last_name=$(echo "$user_response" | jq -r '.person.lastName // ""')
+                    local full_name=""
+                    
+                    if [ -n "$first_name" ] && [ -n "$last_name" ]; then
+                        full_name="$first_name $last_name"
+                    elif [ -n "$first_name" ]; then
+                        full_name="$first_name"
+                    elif [ -n "$last_name" ]; then
+                        full_name="$last_name"
+                    else
+                        full_name="User $user_id"
+                    fi
+                    
+                    echo "$user_id|$full_name" >> "$user_cache_file"
+                fi
+            fi
+        done
+    fi
     
     # Format and display each comment in table format
     echo "$display_comments" | jq -r '.[] | 
         (.postedDateTime // .createdDate // .dateCreated // "Unknown date") + "|" + 
-        (
-            # Try the most common Teamwork API field patterns
-            if (.author | type == "object") and (.author.firstName // .author.lastName // .author.name // "") != "" then
-                ((.author.firstName // "") + " " + (.author.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.author.name // "Unknown User") else . end
-            elif (.postedBy | type == "object") and (.postedBy.firstName // .postedBy.lastName // .postedBy.name // "") != "" then
-                ((.postedBy.firstName // "") + " " + (.postedBy.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.postedBy.name // "Unknown User") else . end
-            elif (.createdBy | type == "object") and (.createdBy.firstName // .createdBy.lastName // .createdBy.name // "") != "" then
-                ((.createdBy.firstName // "") + " " + (.createdBy.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.createdBy.name // "Unknown User") else . end
-            elif (.user | type == "object") and (.user.firstName // .user.lastName // .user.name // "") != "" then
-                ((.user.firstName // "") + " " + (.user.lastName // "")) | gsub("  "; " ") | gsub("^ | $"; "") | if . == "" then (.user.name // "Unknown User") else . end
-            elif (.authorName // .userName // .createdByName // .postedByName // "") != "" then
-                (.authorName // .userName // .createdByName // .postedByName)
-            else
-                "Unknown User"
-            end
-        ) + "|" + 
-        (.body // "No content")' | while IFS='|' read -r date_part author_part content_part; do
+        ((.postedByUserId // "unknown") | tostring) + "|" + 
+        (.body // "No content")' | while IFS='|' read -r date_part user_id_part content_part; do
         
         # Format dates if they look like ISO dates
         local formatted_date="$date_part"
@@ -2711,9 +2727,18 @@ format_task_comments() {
             fi
         fi
         
+        # Get author name from user cache file
+        local author_name="Unknown User"
+        if [ "$user_id_part" != "unknown" ] && [ -f "$user_cache_file" ]; then
+            author_name=$(grep "^$user_id_part|" "$user_cache_file" | cut -d'|' -f2)
+            if [ -z "$author_name" ]; then
+                author_name="Unknown User"
+            fi
+        fi
+        
         # Display comment in table format with full content
         local date_display="$(echo "$formatted_date" | cut -c1-25)"
-        local author_display="$(echo "$author_part" | cut -c1-15)"
+        local author_display="$(echo "$author_name" | cut -c1-15)"
         
         # For content, split into multiple lines if needed
         local content_lines=()
