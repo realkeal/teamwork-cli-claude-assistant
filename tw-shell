@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Teamwork CLI Shell - Interactive shell with tw commands
+# Usage: ./tw-shell
+
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Start a subshell with custom prompt and aliases
+echo "Entering Teamwork CLI shell. Type 'exit' to leave."
+echo "You can now use commands like: tasks, task <id>, summary <id>, etc."
+echo ""
+
+# Create a temporary RC file for the subshell
+TMP_RC=$(mktemp)
+cat > "$TMP_RC" << 'EOF'
+# Source user's bashrc if it exists
+[ -f ~/.bashrc ] && source ~/.bashrc
+
+# Custom prompt
+PS1="tw> "
+
+# Alias all tw commands
+alias tasks="$SCRIPT_DIR/tw tasks"
+alias task="$SCRIPT_DIR/tw task"
+alias summary="$SCRIPT_DIR/tw summary"
+alias open="$SCRIPT_DIR/tw open"
+alias refresh="$SCRIPT_DIR/tw refresh"
+alias flags="$SCRIPT_DIR/tw flags"
+alias action="$SCRIPT_DIR/tw action"
+alias unaction="$SCRIPT_DIR/tw unaction"
+
+# Also allow running tw directly
+alias tw="$SCRIPT_DIR/tw"
+
+# Function to handle unknown commands
+command_not_found_handle() {
+    # Try to run it as a tw command
+    if "$SCRIPT_DIR/tw" "$@" 2>/dev/null; then
+        return 0
+    else
+        echo "Command not found: $1"
+        return 127
+    fi
+}
+EOF
+
+# Replace SCRIPT_DIR placeholder with actual path
+sed -i.bak "s|\$SCRIPT_DIR|$SCRIPT_DIR|g" "$TMP_RC" && rm "$TMP_RC.bak"
+
+# Start interactive bash with custom RC
+/bin/bash --rcfile "$TMP_RC" -i
+
+# Cleanup
+rm -f "$TMP_RC"
