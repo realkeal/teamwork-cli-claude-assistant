@@ -70,6 +70,22 @@ stop_spinner() {
     fi
 }
 
+# Function to update spinner message dynamically
+update_spinner() {
+    local new_message="$1"
+    if [ -n "$SPINNER_PID" ] && [ -t 2 ]; then
+        # Stop current spinner
+        kill $SPINNER_PID 2>/dev/null
+        # Start new one with updated message
+        show_spinner "$new_message" &
+        SPINNER_PID=$!
+        disown $SPINNER_PID 2>/dev/null
+    elif [ -t 2 ]; then
+        # Start spinner if none running
+        start_spinner "$new_message"
+    fi
+}
+
 # Function to get cache file path
 get_cache_file() {
     local cache_key="$1"
@@ -435,28 +451,6 @@ is_task_data_current() {
     fi
 }
 
-# Function to format description with proper word wrapping
-format_description_lines() {
-    local description="$1"
-    local max_width="$2"
-    
-    if [ -z "$description" ] || [ "$description" = "null" ] || [ "$description" = "" ]; then
-        return
-    fi
-    
-    # Split description into words and wrap to fit width
-    local first_line=true
-    echo "$description" | fold -s -w "$max_width" | while IFS= read -r line; do
-        if [ -n "$line" ]; then
-            if [ "$first_line" = true ]; then
-                printf "│ Description: %-66s │\n" "$line"
-                first_line=false
-            else
-                printf "│              %-66s │\n" "$line"
-            fi
-        fi
-    done
-}
 
 # Function to show first-time welcome message
 show_welcome_message() {
@@ -467,28 +461,23 @@ show_welcome_message() {
         return 0  # Already shown, skip
     fi
     
-    # Display welcome message in green box
-    echo -e "\033[32m"  # Set green color
-    cat << 'EOF'
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                 │
-│                          🎉 Welcome to Teamwork CLI! 🎉                        │
-│                                                                                 │
-│   Thank you for using the Teamwork.com command-line interface. This tool       │
-│   helps you manage your tasks, projects, and workflow directly from your       │
-│   terminal with powerful features like AI summaries and smart filtering.       │
-│                                                                                 │
-│   Created by: Anthony Keal                                                      │
-│   Email: contact@business.anthonykeal.com.au                                    │
-│                                                                                 │
-│   💝 If you find this tool helpful, consider supporting development:           │
-│   Buy Me a Coffee: https://buymeacoffee.com/anthonykeal                        │
-│                                                                                 │
-│   Get started by running 'tw flags' to see all available commands!             │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-EOF
-    echo -e "\033[0m"  # Reset color
+    # Display welcome message in clean format
+    printf "\n"
+    printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    printf "\n"
+    printf "\033[1m                        WELCOME TO TEAMWORK CLI                        \033[0m\n"
+    printf "\n"
+    printf "   \033[92m✓\033[0m Modern command-line interface for Teamwork.com\n"
+    printf "   \033[92m✓\033[0m AI-powered task summaries and smart filtering\n"
+    printf "   \033[92m✓\033[0m Clean terminal output and intuitive commands\n"
+    printf "\n"
+    printf "   \033[1mCreated by:\033[0m Anthony Keal\n"
+    printf "   \033[1mContact:\033[0m contact@business.anthonykeal.com.au\n"
+    printf "\n"
+    printf "   \033[93m➤\033[0m \033[1mGet Started:\033[0m Run 'tw flags' to see all available commands\n"
+    printf "   \033[93m➤\033[0m \033[1mSupport:\033[0m https://buymeacoffee.com/anthonykeal\n"
+    printf "\n"
+    printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     echo
     
     # Create flag file to mark welcome message as shown
@@ -734,8 +723,7 @@ if [ -z "$CLAUDE_MODEL" ]; then
     CLAUDE_MODEL="claude-3-5-sonnet-20241022"
 fi
 
-# Show welcome message on first run
-show_welcome_message
+# Welcome message removed per user request
 
 # Function to fetch all projects user is assigned to
 fetch_assigned_projects() {
@@ -806,18 +794,14 @@ project_wizard() {
     local selected=0
     local key
     
-    # Function to display projects list
+    # Function to display projects list in clean format
     display_projects() {
         # Move cursor to top and clear screen below
         printf "\033[H\033[J"
         
-        echo "Select a project:"
-        echo "Use up/down arrow keys to navigate, Enter to select, q to quit"
-        echo
-        
-        printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-        printf "│ %-79s │\n" "Available Projects"
-        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+        printf "\033[1mSELECT PROJECT\033[0m\n"
+        printf "Use ↑/↓ arrow keys to navigate, Enter to select, q to quit\n"
+        printf "\n"
         
         for i in $(seq 0 $((project_count - 1))); do
             local project_id=$(echo "$projects_json" | jq -r ".[$i].id")
@@ -825,20 +809,18 @@ project_wizard() {
             
             if [ $i -eq $selected ]; then
                 if [ "$project_id" = "ALL" ]; then
-                    printf "│ > %-76s │\n" "$(echo "$project_name" | cut -c1-76)"
+                    printf "▶ \033[1m%s\033[0m\n" "$project_name"
                 else
-                    printf "│ > ID:%-7s %-66s │\n" "$project_id" "$(echo "$project_name" | cut -c1-66)"
+                    printf "▶ \033[1m%s\033[0m \033[90m(ID: %s)\033[0m\n" "$project_name" "$project_id"
                 fi
             else
                 if [ "$project_id" = "ALL" ]; then
-                    printf "│   %-76s │\n" "$(echo "$project_name" | cut -c1-76)"
+                    printf "  %s\n" "$project_name"
                 else
-                    printf "│   ID:%-7s %-66s │\n" "$project_id" "$(echo "$project_name" | cut -c1-66)"
+                    printf "  %s \033[90m(ID: %s)\033[0m\n" "$project_name" "$project_id"
                 fi
             fi
         done
-        
-        printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
     }
     
     display_projects
@@ -1032,128 +1014,400 @@ pad_colored_text() {
     fi
 }
 
-# Function to wrap text for table display (79 characters per line)
-wrap_text_for_table() {
+# Function to format bullet points with proper hanging indent
+format_bullet_point() {
     local text="$1"
-    local remaining_text="$text"
-    local stripped_text=$(strip_colors "$text")
+    local first_indent="$2"     # e.g., "     • "
+    local hanging_indent="$3"   # e.g., "       "
+    local width="${4:-75}"      # Default wrap width
     
-    # If text fits in one line, just display it with proper padding
-    if [ ${#stripped_text} -le 79 ]; then
-        printf "│ %s │\n" "$(pad_colored_text "$text" 79)"
-        return
+    # Use fold to wrap the text, then add proper indentation
+    echo "$text" | fold -s -w $((width - ${#hanging_indent})) | {
+        local first_line=true
+        while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                if [ "$first_line" = true ]; then
+                    printf "%s%s\n" "$first_indent" "$line"
+                    first_line=false
+                else
+                    printf "%s%s\n" "$hanging_indent" "$line"
+                fi
+            fi
+        done
+    }
+}
+
+
+
+# Function to display single task in clean format
+format_clean_single_task_display() {
+    local task_name="$1"
+    local task_id="$2"
+    local priority="$3"
+    local formatted_due="$4"
+    local formatted_start="$5"
+    local description="$6"
+    local task_url="$7"
+    local formatted_tags="$8"
+    local ai_summary="$9"
+    local comments_data="${10}"
+    local comments_mode="${11}"
+    
+    # Format priority display
+    local priority_display="$priority"
+    case "$priority" in
+        "high") priority_display="HIGH" ;;
+        "medium") priority_display="MEDIUM" ;;
+        "low") priority_display="LOW" ;;
+        *) priority_display="NORMAL" ;;
+    esac
+    
+    # Format priority with bold colors for better visibility
+    local priority_colored=""
+    case "$priority" in
+        "high") priority_colored="\033[91m\033[1m[HIGH]\033[0m" ;;
+        "medium") priority_colored="\033[93m\033[1m[MEDIUM]\033[0m" ;;
+        "low") priority_colored="\033[92m\033[1m[LOW]\033[0m" ;;
+        *) priority_colored="\033[37m[NORMAL]\033[0m" ;;
+    esac
+    
+    # Format due date with overdue color
+    local due_colored="$formatted_due"
+    if [[ "$formatted_due" == *"OVERDUE"* ]]; then
+        due_colored="\033[91m$formatted_due\033[0m"
     fi
     
-    # For longer text, we need to be more careful about wrapping
-    # Split by words and build lines that fit
-    local words=($stripped_text)  # Split into words array
-    local current_line=""
-    local current_line_colored=""
+    # Display task ID in grey above the title
+    printf "  \033[90m#%s\033[0m\n" "$task_id"
     
-    for word in "${words[@]}"; do
-        local test_line="$current_line"
-        if [ -n "$current_line" ]; then
-            test_line="$current_line $word"
+    # Calculate space needed for right info (priority)
+    local right_info_clean="[$priority_display]"
+    local right_len=${#right_info_clean}
+    local available_name_space=$((78 - right_len - 2))  # -2 for spacing
+    
+    # Wrap title if necessary
+    local display_name="$(echo "$task_name" | tr '[:lower:]' '[:upper:]')"
+    if [ ${#display_name} -gt $available_name_space ]; then
+        # Truncate title to fit, ensuring we don't break in middle of word
+        local truncated_name="${display_name:0:$((available_name_space-3))}"
+        # Find last space to avoid breaking words
+        local last_space_pos="${truncated_name% *}"
+        if [ ${#last_space_pos} -lt $((available_name_space-10)) ]; then
+            # If breaking at last space makes it too short, just truncate
+            display_name="${truncated_name}..."
         else
-            test_line="$word"
+            display_name="${last_space_pos}..."
         fi
+    fi
+    
+    # Display title with priority right-aligned on same line
+    local title_len=${#display_name}
+    local padding=$((78 - title_len - right_len))
+    
+    printf "  \033[1m%s\033[0m" "$display_name"
+    printf "%*s" $padding ""
+    echo -e "$priority_colored"
+    printf "\n"
+    
+    # Task metadata
+    if [ "$formatted_due" != "No due date" ]; then
+        echo -e "  Due: $due_colored"
+    fi
+    
+    if [ "$formatted_start" != "No start date" ] && [ "$formatted_start" != "null" ]; then
+        printf "  Start: %s\n" "$formatted_start"  
+    fi
+    
+    if [ -n "$formatted_tags" ]; then
+        printf "  Tags: %s\n" "$formatted_tags"
+    fi
+    
+    printf "\n"
+    
+    # Description section
+    if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
+        printf "  \033[1mDESCRIPTION\033[0m\n"
+        echo "$description" | fold -s -w 75 | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                printf "   %s\n" "$line"
+            fi
+        done
+        printf "\n"
+    fi
+    
+    # AI Summary section
+    if [ -n "$ai_summary" ]; then
+        # Extract just the summary part (before "Next Steps:")
+        local summary_only=$(echo "$ai_summary" | sed -n '1,/^Next Steps:/p' | sed '/^Next Steps:/d' | sed 's/^AI Summary: //')
+        # Extract next steps first to determine if we should show the box
+        local next_steps=$(echo "$ai_summary" | sed -n '/Next Steps:/,$p' | sed '1d' | sed '/^$/d')
         
-        # If adding this word would exceed 79 characters, output current line
-        if [ ${#test_line} -gt 79 ]; then
-            if [ -n "$current_line" ]; then
-                printf "│ %s │\n" "$(pad_colored_text "$current_line_colored" 79)"
-                current_line="$word"
-                current_line_colored="$word"  # For now, simplified without color preservation
-            else
-                # Single word is too long, just truncate it
-                printf "│ %s │\n" "$(pad_colored_text "${word:0:79}" 79)"
-                current_line=""
-                current_line_colored=""
+        if [ -n "$summary_only" ] || [ -n "$next_steps" ]; then
+            printf "  \033[1m\033[34mAI Summary\033[0m\n"
+            
+            # Display summary content if present
+            if [ -n "$summary_only" ]; then
+                echo "$summary_only" | fold -s -w 75 | while IFS= read -r line; do
+                    if [ -n "$line" ]; then
+                        printf "  %s\n" "$line"
+                    fi
+                done
             fi
-        else
-            current_line="$test_line"
-            if [ -n "$current_line_colored" ]; then
-                current_line_colored="$current_line_colored $word"
-            else
-                current_line_colored="$word"
+            
+            # Display next steps if present
+            if [ -n "$next_steps" ]; then
+                # Add separator line if we had summary content
+                if [ -n "$summary_only" ]; then
+                    printf "\n"
+                fi
+                printf "  \033[1m\033[34mNext steps\033[0m\n"
+                echo "$next_steps" | while IFS= read -r line; do
+                    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.*) ]]; then
+                        local bullet_text="${BASH_REMATCH[1]}"
+                        # Wrap bullet text manually to maintain left border
+                        echo "$bullet_text" | fold -s -w 71 | {
+                            local first_line=true
+                            while IFS= read -r wrapped_line; do
+                                if [ -n "$wrapped_line" ]; then
+                                    if [ "$first_line" = true ]; then
+                                        printf "  • %s\n" "$wrapped_line"
+                                        first_line=false
+                                    else
+                                        printf "    %s\n" "$wrapped_line"
+                                    fi
+                                fi
+                            done
+                        }
+                    elif [ -n "$line" ]; then
+                        printf "  %s\n" "$line"
+                    fi
+                done
             fi
+            
+            printf "\n\n"
         fi
-    done
+    fi
     
-    # Output any remaining text
-    if [ -n "$current_line" ]; then
-        printf "│ %s │\n" "$(pad_colored_text "$current_line_colored" 79)"
+    # Comments section
+    if [ -n "$comments_data" ] && [ "$comments_mode" != "" ]; then
+        format_comments_display "$comments_data" "true"
     fi
 }
 
-# Function to format long summary with proper section separation
-format_long_summary() {
-    local ai_summary="$1"
-    local has_tags="$2"
+# Function to display tasks in clean format (Option 1 style)
+format_clean_task_display() {
+    local task_name="$1"
+    local task_id="$2"
+    local priority="$3"
+    local formatted_due="$4"
+    local ai_summary="$5"
+    local comments_data="$6"
+    local comments_mode="$7"
+    local task_url="$8"
     
-    # Add separator before summary if there are tags displayed
-    if [ "$has_tags" = "true" ]; then
-        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
+    # Format priority display
+    local priority_display="$priority"
+    case "$priority" in
+        "high") priority_display="HIGH" ;;
+        "medium") priority_display="MEDIUM" ;;
+        "low") priority_display="LOW" ;;
+        *) priority_display="NORMAL" ;;
+    esac
+    
+    # Format priority with bold colors for better visibility
+    local priority_colored=""
+    case "$priority" in
+        "high") priority_colored="\033[91m\033[1m[HIGH]\033[0m" ;;
+        "medium") priority_colored="\033[93m\033[1m[MEDIUM]\033[0m" ;;
+        "low") priority_colored="\033[92m\033[1m[LOW]\033[0m" ;;
+        *) priority_colored="\033[37m[NORMAL]\033[0m" ;;
+    esac
+    
+    # Format due date with overdue color
+    local due_colored="$formatted_due"
+    if [[ "$formatted_due" == *"OVERDUE"* ]]; then
+        due_colored="\033[91m$formatted_due\033[0m"
     fi
     
-    # Process the AI summary line by line with section formatting
-    local in_next_steps=false
-    local first_line=true
+    # Display task ID in grey above the title
+    printf "  \033[90m#%s\033[0m\n" "$task_id"
     
-    echo "$ai_summary" | while IFS= read -r line; do
-        # Check if this line starts a new section
-        if [[ "$line" =~ ^(AI Summary|Next Steps): ]]; then
-            # Add separator before new sections (except the very first one)
-            if [ "$first_line" != "true" ]; then
-                printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-            else
-                # Add blank line before first AI SUMMARY section
-                printf "│ %-79s │\n" ""
-            fi
-            first_line=false
-            
-            # Check if we're entering the Next Steps section
-            if [[ "$line" =~ ^Next\ Steps: ]]; then
-                in_next_steps=true
-            else
-                in_next_steps=false
-            fi
-        fi
-        
-        # Format the line content
-        if [ -n "$line" ]; then
-            # Apply pink color to AI Summary and Next Steps headings
-            if [[ "$line" =~ ^(AI Summary|Next Steps): ]]; then
-                # Split the line to separate title from content
-                if [[ "$line" =~ ^(AI\ Summary|Next\ Steps):(.*) ]]; then
-                    local title="${BASH_REMATCH[1]}:"
-                    local content="${BASH_REMATCH[2]}"
-                    # Apply pink color only to the title
-                    echo -e "│ \033[95m$title\033[0m$(printf "%-$((79 - ${#title}))s" "") │"
-                    # Handle content separately with proper wrapping if it exists
-                    if [ -n "$content" ] && [ "$content" != " " ]; then
-                        # Trim leading space and wrap content properly
-                        content="${content# }"
-                        if [ -n "$content" ]; then
-                            wrap_text_for_table "$content"
-                        fi
-                    fi
-                else
-                    # Fallback - just the title with pink color
-                    echo -e "│ \033[95m$line\033[0m$(printf "%-$((79 - ${#line}))s" "") │"
-                fi
-            else
-                wrap_text_for_table "$line"
-            fi
-            # Add break space below list items in Next Steps section
-            if [ "$in_next_steps" = "true" ] && [[ "$line" =~ ^[[:space:]]*- ]]; then
-                printf "│ %-79s │\n" ""
-            fi
+    # Calculate space needed for right info (due date and priority)
+    local right_info_clean="Due: $formatted_due  [$priority_display]"
+    local right_len=${#right_info_clean}
+    local available_title_space=$((78 - right_len - 2))  # -2 for spacing
+    
+    # Wrap title if necessary
+    local display_name="$(echo "$task_name" | tr '[:lower:]' '[:upper:]')"
+    if [ ${#display_name} -gt $available_title_space ]; then
+        # Truncate title to fit, ensuring we don't break in middle of word
+        local truncated_name="${display_name:0:$((available_title_space-3))}"
+        # Find last space to avoid breaking words
+        local last_space_pos="${truncated_name% *}"
+        if [ ${#last_space_pos} -lt $((available_title_space-10)) ]; then
+            # If breaking at last space makes it too short, just truncate
+            display_name="${truncated_name}..."
         else
-            # Empty lines become separator lines
-            printf "│ %-79s │\n" ""
+            display_name="${last_space_pos}..."
+        fi
+    fi
+    
+    # Display title with due date right-aligned on same line
+    local title_len=${#display_name}
+    local padding=$((78 - title_len - right_len))
+    
+    printf "  \033[1m%s\033[0m" "$display_name"
+    printf "%*s" $padding ""
+    echo -e "Due: $due_colored  $priority_colored"
+    printf "\n"
+    
+    # AI Summary section
+    if [ -n "$ai_summary" ]; then
+        # Extract just the summary part (before "Next Steps:")
+        local summary_only=$(echo "$ai_summary" | sed -n '1,/^Next Steps:/p' | sed '/^Next Steps:/d' | sed 's/^AI Summary: //')
+        # Extract next steps first to determine if we should show the box
+        local next_steps=$(echo "$ai_summary" | sed -n '/Next Steps:/,$p' | sed '1d' | sed '/^$/d')
+        
+        if [ -n "$summary_only" ] || [ -n "$next_steps" ]; then
+            printf "  \033[1m\033[34mAI Summary\033[0m\n"
+            
+            # Display summary content if present
+            if [ -n "$summary_only" ]; then
+                echo "$summary_only" | fold -s -w 75 | while IFS= read -r line; do
+                    if [ -n "$line" ]; then
+                        printf "  %s\n" "$line"
+                    fi
+                done
+            fi
+            
+            # Display next steps if present
+            if [ -n "$next_steps" ]; then
+                # Add separator line if we had summary content
+                if [ -n "$summary_only" ]; then
+                    printf "\n"
+                fi
+                printf "  \033[1m\033[34mNext steps\033[0m\n"
+                echo "$next_steps" | while IFS= read -r line; do
+                    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.*) ]]; then
+                        local bullet_text="${BASH_REMATCH[1]}"
+                        # Wrap bullet text manually to maintain left border
+                        echo "$bullet_text" | fold -s -w 71 | {
+                            local first_line=true
+                            while IFS= read -r wrapped_line; do
+                                if [ -n "$wrapped_line" ]; then
+                                    if [ "$first_line" = true ]; then
+                                        printf "  • %s\n" "$wrapped_line"
+                                        first_line=false
+                                    else
+                                        printf "    %s\n" "$wrapped_line"
+                                    fi
+                                fi
+                            done
+                        }
+                    elif [ -n "$line" ]; then
+                        printf "  %s\n" "$line"
+                    fi
+                done
+            fi
+            
+            printf "\n\n"
+        fi
+    fi
+    
+    # Comments section
+    if [ -n "$comments_data" ] && [ "$comments_mode" != "" ]; then
+        format_comments_display "$comments_data" "false"
+    fi
+    
+    # Add minimal dotted line separator between tasks for better scanability
+    printf "\n  "
+    printf '·%.0s' {1..76}  # 76 dots to align with 78-char width (minus 2 for indentation)
+    printf "\n\n"
+}
+
+# Function to get user name from ID
+get_user_name() {
+    local user_id="$1"
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/people/$user_id.json" 2>/dev/null)
+    
+    if [ $? -eq 0 ] && [ -n "$response" ]; then
+        local first_name=$(echo "$response" | jq -r '.person.firstName // empty' 2>/dev/null)
+        local last_name=$(echo "$response" | jq -r '.person.lastName // empty' 2>/dev/null)
+        if [ -n "$first_name" ] && [ -n "$last_name" ]; then
+            echo "$first_name $last_name"
+        else
+            echo "User $user_id"
+        fi
+    else
+        echo "User $user_id"
+    fi
+}
+
+# Function to fetch task comments for clean display
+fetch_task_comments_for_display() {
+    local task_id="$1"
+    local limit="$2"
+    
+    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
+    local response=$(curl -s -H "$auth_header" \
+        "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=50" 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$response" ]; then
+        echo "[]"
+        return
+    fi
+    
+    # Parse comments with user IDs for later name resolution
+    echo "$response" | jq --arg limit "$limit" -r '
+        [.comments[]? | select(.body and .body != "") | {
+            body: (.body | gsub("<[^>]*>"; "") | gsub("\\r\\n|\\n"; " ")),
+            bodyFull: (.body | gsub("<[^>]*>"; "") | gsub("\\r\\n"; "\n") | gsub("\\n\\n+"; "\n\n")),
+            userId: .postedByUserId,
+            date: (.postedDateTime | split("T")[0] | split("-") | [.[1], .[2]] | join("/"))
+        }] | sort_by(.date) | reverse | .[0:($limit | tonumber)]
+    ' 2>/dev/null || echo "[]"
+}
+
+# Function to format comments for display
+format_comments_display() {
+    local comments_data="$1"
+    local is_single_task="$2"  # "true" for single task view, "false" for task list
+    
+    if [ -z "$comments_data" ] || [ "$comments_data" = "[]" ]; then
+        return
+    fi
+    
+    local comment_count=$(echo "$comments_data" | jq '. | length')
+    if [ "$comment_count" -eq 0 ]; then
+        return
+    fi
+    
+    printf "  \033[1mRECENT COMMENTS (%s)\033[0m\n" "$comment_count"
+    
+    # Process each comment
+    echo "$comments_data" | jq -c '.[]' | while read -r comment; do
+        local user_id=$(echo "$comment" | jq -r '.userId')
+        local date=$(echo "$comment" | jq -r '.date')
+        local user_name=$(get_user_name "$user_id")
+        
+        if [ "$is_single_task" = "true" ]; then
+            # Full comment for single task view
+            local body=$(echo "$comment" | jq -r '.bodyFull')
+            printf "  \033[1m%s - %s\033[0m\n" "$date" "$user_name"
+            echo "$body" | fold -s -w 71 | while IFS= read -r line; do
+                if [ -n "$line" ]; then
+                    printf "  %s\n" "$line"
+                fi
+            done
+            printf "\n"
+        else
+            # Truncated comment for task list view
+            local body=$(echo "$comment" | jq -r '.body | .[0:75]')
+            printf "  %s  %s: %s\n" "$date" "$user_name" "$body"
         fi
     done
+    printf "\n"
 }
 
 # Function to fetch tags for the project and create a lookup map
@@ -1484,13 +1738,14 @@ get_tasks() {
     local due_filter=""
     local start_filter=""
     local tags_filter=""
-    local summary_mode=""
+    local summary_mode="long"
     local debug_mode="false"
     local display_timezone="UTC"  # Default to UTC
     local order_by="duedate"  # Default ordering
     local include_subtasks="true"  # Default to including subtasks
     local max_subtask_depth="${SUBTASK_MAX_DEPTH:-3}"  # Max depth from env or default to 3
     local max_subtasks_per_parent="${SUBTASK_MAX_PER_PARENT:-50}"  # Max subtasks per parent
+    local comments_mode=""  # Comments display mode
     
     # Parse flags
     shift # Remove 'tasks' from arguments
@@ -1512,12 +1767,8 @@ get_tasks() {
                 tags_filter="${1#*=}"
                 shift
                 ;;
-            --summary=*)
-                summary_mode="${1#*=}"
-                shift
-                ;;
-            --summary)
-                summary_mode="short"
+            --no-summary)
+                summary_mode=""
                 shift
                 ;;
             --order=*)
@@ -1538,6 +1789,14 @@ get_tasks() {
                 ;;
             --subtask-depth=*)
                 max_subtask_depth="${1#*=}"
+                shift
+                ;;
+            --comments=*)
+                comments_mode="${1#*=}"
+                shift
+                ;;
+            --comments)
+                comments_mode="3"
                 shift
                 ;;
             --help)
@@ -1563,13 +1822,12 @@ get_tasks() {
     local cache_file=$(get_cache_file "$cache_key")
     local show_update_indicator=false
     
-    if ! is_cache_valid "$cache_file"; then
-        # Cache miss - fetch from API
+    if ! is_task_data_current "$cache_file" "$project_id"; then
+        # Cache miss or data changed - fetch from API
         local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
         
         if [ "$project_id" = "ALL" ]; then
-            echo "Fetching tasks from all projects..."
-            echo
+            start_spinner "Project-ing all tasks from all projects..."
             
             # Fetch tasks from all projects using the tasks endpoint with user filter
             # Use field selection to reduce payload size and improve performance
@@ -1577,7 +1835,7 @@ get_tasks() {
                 "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
             
             # Also fetch tasks from inbox/personal tasklists to catch tasks with projectId: null
-            echo "Fetching tasks from inbox and personal tasklists..."
+            update_spinner "In-box-ing personal tasklists..."
             local inbox_response=$(curl -s -H "$auth_header" \
                 "$TEAMWORK_URL/projects/api/v3/tasklists.json?pageSize=500&fields=id,name,projectId" 2>/dev/null)
             
@@ -1619,8 +1877,7 @@ get_tasks() {
                 fi
             fi
         else
-            echo "Fetching tasks for project $project_id..."
-            echo
+            start_spinner "Task-ing you to wait while I fetch project $project_id..."
             
             # Fetch tasks from specific project with field selection for better performance
             response=$(curl -s -H "$auth_header" \
@@ -1642,7 +1899,7 @@ get_tasks() {
         
         # If fetching for a specific project, also fetch tasks from tasklists to catch missing tasks
         if [ "$project_id" != "ALL" ]; then
-            echo "Fetching tasklists and their tasks..."
+            update_spinner "List-ening for tasklists and their tasks..."
             
             # Fetch tasklists in the project with timeout protection
             local tasklists_response
@@ -1663,9 +1920,7 @@ get_tasks() {
                     
                     # Fetch tasks from each tasklist with spinner
                     local total_tasklists=$(echo "$tasklists" | wc -l)
-                    echo "Found $total_tasklists tasklists to check..."
-                    
-                    start_spinner "Checking tasklists..."
+                    update_spinner "Check-listing $total_tasklists tasklists..."
                     
                     while IFS= read -r tasklist_id; do
                         if [ -n "$tasklist_id" ] && [ "$tasklist_id" != "null" ]; then
@@ -1725,91 +1980,11 @@ get_tasks() {
         # Save to cache
         save_to_cache "$cache_key" "$response"
     else
-        # Cache exists - check if task data is still current
-        if is_task_data_current "$cache_file" "$project_id"; then
-            echo "Loading tasks from cache..."
-            echo
-            show_update_indicator=true
-        else
-            echo "Tasks have been updated - fetching fresh data..."
-            echo
-            # Fetch fresh data since tasks were updated
-            local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
-            
-            if [ "$project_id" = "ALL" ]; then
-                # Fetch tasks from all projects with field selection
-                response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/tasks.json?assigneeUserIds=$USER_ID&pageSize=500&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
-            else
-                # Fetch tasks from specific project with field selection
-                response=$(curl -s -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasks.json?fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress")
-                
-                # Also fetch from all tasklists in the project for comprehensive coverage
-                echo "Fetching from all tasklists..."
-                local tasklists_response
-                if tasklists_response=$(curl -s --max-time 15 -H "$auth_header" \
-                    "$TEAMWORK_URL/projects/api/v3/projects/$project_id/tasklists.json?pageSize=200" 2>/dev/null); then
-                    
-                    local tasklists=$(echo "$tasklists_response" | jq -r '.tasklists[]?.id // empty' 2>/dev/null)
-                    if [ -n "$tasklists" ]; then
-                        local tasklist_tasks_json="[]"
-                        local processed=0
-                        local total_tasklists=$(echo "$tasklists" | wc -l)
-                        
-                        start_spinner "Checking $total_tasklists tasklists..."
-                        
-                        while IFS= read -r tasklist_id; do
-                            if [ -n "$tasklist_id" ] && [ "$tasklist_id" != "null" ]; then
-                                processed=$((processed + 1))
-                                
-                                local tasklist_response
-                                if tasklist_response=$(curl -s --max-time 10 -H "$auth_header" \
-                                    "$TEAMWORK_URL/projects/api/v3/tasklists/$tasklist_id/tasks.json?assigneeUserIds=$USER_ID&fields=id,name,priority,dueDate,startDate,description,projectId,tagIds,updatedAt,createdAt,parentTaskId,assigneeUserIds,status,progress&pageSize=500" 2>/dev/null); then
-                                    
-                                    local tasks_from_list=$(echo "$tasklist_response" | jq '.tasks // []' 2>/dev/null)
-                                    if [ -n "$tasks_from_list" ] && [ "$tasks_from_list" != "null" ] && [ "$tasks_from_list" != "[]" ]; then
-                                        local task_count=$(echo "$tasks_from_list" | jq 'length' 2>/dev/null || echo "0")
-                                        if [ "$task_count" -gt 0 ]; then
-                                            tasklist_tasks_json=$(echo "$tasklist_tasks_json" "$tasks_from_list" | jq -s 'add' 2>/dev/null || echo "$tasklist_tasks_json")
-                                        fi
-                                    fi
-                                fi
-                            fi
-                        done <<< "$tasklists"
-                        
-                        stop_spinner
-                        
-                        # Combine project tasks with tasklist tasks
-                        if [ -n "$tasklist_tasks_json" ] && [ "$tasklist_tasks_json" != "[]" ]; then
-                            local project_tasks=$(echo "$response" | jq '.tasks // []')
-                            local combined_response
-                            if combined_response=$(echo "$project_tasks" "$tasklist_tasks_json" | jq -s '{tasks: (.[0] + .[1]) | unique_by(.id)}' 2>/dev/null); then
-                                response="$combined_response"
-                            fi
-                        fi
-                    fi
-                fi
-            fi
-            
-            if [ $? -ne 0 ]; then
-                echo "Error: Failed to fetch tasks from Teamwork API"
-                exit 1
-            fi
-            
-            # Check if response contains error
-            local error=$(echo "$response" | jq -r '.error // empty')
-            if [ -n "$error" ]; then
-                echo "API Error: $error"
-                exit 1
-            fi
-            
-            # Save fresh data to cache
-            save_to_cache "$cache_key" "$response"
-        fi
-        local response=$(cat "$cache_file")
+        echo "Loading tasks from cache..."
+        echo
+        show_update_indicator=true
     fi
-    
+
     # Fetch tags if needed (for display or filtering)
     local tags_lookup="{}"
     if [ -n "$tags_filter" ]; then
@@ -1907,7 +2082,7 @@ get_tasks() {
             fi
         else
             # Show progress indicator
-            echo "Fetching subtasks (max depth: $max_subtask_depth)..." >&2
+            update_spinner "Sub-scribing to subtasks (max depth: $max_subtask_depth)..."
             
             # Fetch all subtasks with simplified approach
             subtasks=$(fetch_subtasks_simple "$task_ids" "$auth_header" "$USER_ID" "$max_subtask_depth")
@@ -2013,7 +2188,8 @@ get_tasks() {
     
     # Terminal clearing removed - no longer clearing screen
     
-    # Display task summary
+    # Stop spinner and display task summary
+    stop_spinner
     echo "Found $task_count task(s) assigned to you."
     echo "Tasks displayed in $order_description."
     echo
@@ -2056,6 +2232,9 @@ get_tasks() {
     # Format and display regular tasks
     local total_tasks=$(echo "$regular_tasks" | grep -c '^{')
     local task_counter=0
+    
+    # Show header for clean format (always)
+    printf "\n  TASKS (%d found) - Due date order\n" "$total_tasks"
     
     # Process regular tasks with progress tracking
     while IFS= read -r task; do
@@ -2120,80 +2299,29 @@ get_tasks() {
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
         
-        # Display status indicators above the task table if they exist
-        if [ -n "$status_indicators" ]; then
-            echo -e "$status_indicators"
-        fi
-        
-        # Display task in table format
-        printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-        echo -e "│ $(pad_colored_text "$formatted_title" 79) │"
-        
-        # Show full details for all regular tasks
-        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-            # Show Priority and Due date on separate lines
-            printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
-            printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
-            
-            # Show description if it exists - start on new line without padding
-            if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
-                printf "│ %-79s │\n" ""
-                printf "│ Description: %-66s │\n" ""
-                # Format description without padding around it
-                echo "$description" | fold -s -w 77 | while IFS= read -r line; do
-                    if [ -n "$line" ]; then
-                        printf "│ %-79s │\n" "$line"
-                    fi
-                done
+        # Always use clean format for all task displays
+        if true; then
+            # Use clean formatting for all tasks
+            local comments_data=""
+            if [ -n "$comments_mode" ]; then
+                comments_data=$(fetch_task_comments_for_display "$task_id" "$comments_mode")
             fi
             
-            printf "│ %-79s │\n" ""
-            printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
-            
-            # Show tags if they exist and were filtered
-            if [ -n "$formatted_tags" ]; then
-                printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
-            fi
-        
-        # Show AI summary if requested
-        if [ -n "$summary_mode" ]; then
-            # Start spinner for AI summary generation
-            start_spinner "Generating AI summary $task_counter of $total_tasks..."
-            
-            local task_with_comments=$(get_task_with_comments "$task_id")
-            if [ -n "$task_with_comments" ]; then
-                case "$summary_mode" in
-                    "short")
-                        local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
-                        stop_spinner
-                        if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                            printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-                            printf "│ %-79s │\n" ""
-                            echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-68s" "") │"
-                            wrap_text_for_table "$ai_summary"
-                        fi
-                        ;;
-                    "long")
-                        local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
-                        stop_spinner
-                        if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                            # Check if tags were displayed to determine separator placement
-                            local has_tags="false"
-                            if [ -n "$formatted_tags" ]; then
-                                has_tags="true"
-                            fi
-                            format_long_summary "$ai_summary" "$has_tags"
-                        fi
-                        ;;
-                esac
-            else
+            # Get AI summary
+            local ai_summary=""
+            if [ -n "$summary_mode" ]; then
+                start_spinner "Generating AI summary $task_counter of $total_tasks..."
+                local task_with_comments=$(get_task_with_comments "$task_id")
+                if [ -n "$task_with_comments" ]; then
+                    ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                fi
                 stop_spinner
             fi
+            
+            # Display in clean format
+            format_clean_task_display "$task_name" "$task_id" "$priority" "$formatted_due" "$ai_summary" "$comments_data" "$comments_mode" "$task_url"
+            continue
         fi
-        
-        # Close table for all regular tasks
-        printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
-        echo
     done <<< "$regular_tasks"
     
     # Stop spinner if still running
@@ -2319,287 +2447,57 @@ get_activity() {
     echo "Activity feature not yet implemented."
 }
 
-# Function to show help
+# Function to show help in clean format
 show_help() {
-    cat << EOF
-Teamwork CLI (tw) - Command-line interface for Teamwork.com
-
-USAGE:
-    tw                      Interactive project selection wizard
-    tw tasks [options]      List tasks assigned to you  
-    tw task {ID|Title}      View single task details with optional AI summary
-    tw open {ID|Title}      Open task in browser automatically
-    tw summary {ID|Title}   Generate detailed AI summary for specific task
-    tw action {ID}          Mark task as actioned (shows green ✔ Actioned status)
-    tw unaction {ID}        Remove actioned status from task
-    tw unaction --all       Remove actioned status from all tasks
-    tw refresh              Clear all cached data
-    tw refresh {ID}         Clear cache for specific task only
-    tw flags                Show this help message
-
-TASK OPTIONS (for 'tasks' command):
-    --priority=VALUE     Filter by priority (high, medium, low, normal)
-    --due=VALUE          Filter by due date (today, overdue, DD/MM/YYYY, YYYY-MM-DD)
-    --start=VALUE        Filter by start date (today, DD/MM/YYYY, YYYY-MM-DD)  
-    --tags=VALUE         Filter by tag name (case insensitive)
-    --order=VALUE        Sort tasks by: priority, lastupdated, duedate, start (default: duedate)
-    --summary            Add short AI summaries to task list
-    --summary=long       Add detailed AI summaries to task list
-    --timezone=VALUE     Set display timezone (e.g., Australia/Melbourne, America/New_York, UTC)
-    --debug              Show debug information about API data extraction
-
-SINGLE TASK OPTIONS (for 'task' command):
-    --summary            Add short AI summary to task display
-    --summary=long       Add detailed AI summary to task display
-    --comments           Show all comments for the task
-    --comments=N         Show latest N comments (e.g., --comments=3)
-    --timezone=VALUE     Set display timezone (e.g., Australia/Melbourne, America/New_York, UTC)
-    --output=html        Generate HTML output and open in browser automatically
-    --debug              Show debug information about API data extraction
-
-FEATURES:
-    - Project scope selection with "ALL PROJECTS" option
-    - Smart caching with automatic refresh detection
-    - Task search by title or ID for URL display
-    - Clean terminal output with structured formatting
-    - Full task details including priority, dates, descriptions, and URLs
-    - AI-powered task summaries using Claude (requires claude CLI)
-    - Task status indicator: ✔ Actioned (green)
-    - Persistent actioned status tracking with automatic invalidation on task updates
-
-EXAMPLES:
-    tw                              # Select project interactively
-    tw tasks                        # List all tasks (ordered by due date)
-    tw tasks --order=priority       # List tasks ordered by priority (high first)
-    tw tasks --order=lastupdated    # List tasks ordered by last update
-    tw tasks --summary              # List tasks with short AI summaries
-    tw tasks --summary=long         # List tasks with detailed AI summaries
-    tw tasks --priority=high        # Show only high priority tasks
-    tw tasks --due=today            # Show tasks due today
-    tw tasks --due=overdue          # Show overdue tasks
-    tw tasks --order=start --summary # Show tasks by start date with summaries
-    tw tasks --timezone=Australia/Melbourne # Show tasks with Melbourne timezone
-    tw tasks --no-subtasks          # List tasks without showing subtasks
-    tw tasks --subtask-depth=2      # Show subtasks up to 2 levels deep (default: 3)
-    tw task 123456                  # View single task details by ID
-    tw task "Fix login bug"         # View single task details by title search
-    tw task 123456 --summary        # View single task with short AI summary
-    tw task "Fix login bug" --summary=long # View single task with detailed AI summary
-    tw task 123456 --comments       # View single task with all comments
-    tw task 123456 --comments=3     # View single task with latest 3 comments
-    tw task 123456 --output=html    # View task as HTML in browser
-    tw summary 123456               # Get detailed AI summary for task
-    tw summary "Fix login bug"      # Get AI summary by task title
-    tw open 123456                  # Open task in browser by ID
-    tw open "Fix login bug"         # Open task in browser by title search
-    tw action 123456                # Mark task as actioned
-    tw unaction 123456              # Remove actioned status
-    tw unaction --all               # Remove actioned status from all tasks
-    tw refresh                      # Clear all cached data
-    tw refresh 123456               # Clear cache for specific task only
-
-CONFIGURATION:
-    Environment file: ~/.tw.env or ./.env
-    Required variables: TEAMWORK_URL, API_KEY, PASSWORD, USER_ID
-    Optional variables: CLAUDE_MODEL (default: claude-3-5-sonnet-20241022)
-
-EOF
-}
-
-# Function to format and display task comments
-format_task_comments() {
-    local task_id="$1"
-    local comments_limit="$2"
+    printf "\033[1mTEAMWORK CLI\033[0m - Modern command-line interface for Teamwork.com\n\n"
     
-    # Fetch comments for the task
-    local auth_header="Authorization: Basic $(echo -n "$API_KEY:$PASSWORD" | base64)"
-    local page_size="50"  # Default to 50, will be adjusted based on limit
+    printf "\033[1mUSAGE\033[0m\n"
+    printf "   tw                         Select project interactively\n"
+    printf "   tw tasks [options]         List tasks assigned to you\n" 
+    printf "   tw task {ID|Title}         View single task details\n"
+    printf "   tw open {ID|Title}         Open task in browser\n"
+    printf "   tw action {ID}             Mark task as actioned\n"
+    printf "   tw unaction {ID}           Remove actioned status\n"
+    printf "   tw refresh                 Clear cached data\n"
+    printf "   tw flags                   Show this help message\n\n"
     
-    # Adjust page size based on limit - but ensure we get enough to sort properly
-    if [ "$comments_limit" != "all" ] && [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
-        # Get a bit more than requested to ensure we can sort and limit properly
-        local requested_limit="$comments_limit"
-        if [ "$requested_limit" -lt 50 ]; then
-            page_size="50"  # Get more than needed to ensure proper sorting
-        else
-            page_size="$requested_limit"
-        fi
-    fi
+    printf "\033[1mTASK LIST OPTIONS\033[0m (for 'tw tasks')\n"
+    printf "   --priority=VALUE           Filter by priority (high, medium, low, normal)\n"
+    printf "   --due=VALUE                Filter by due date (today, overdue, YYYY-MM-DD)\n"
+    printf "   --start=VALUE              Filter by start date (today, YYYY-MM-DD)\n"
+    printf "   --tags=VALUE               Filter by tag name (case insensitive)\n"
+    printf "   --order=VALUE              Sort by: priority, lastupdated, duedate, start\n"
+    printf "   --no-summary               Disable AI summaries\n"
+    printf "   --comments                 Show latest 3 comments per task\n"
+    printf "   --comments=N               Show latest N comments per task\n"
+    printf "   --timezone=VALUE           Set display timezone (UTC, Australia/Melbourne)\n\n"
     
-    # Use same approach as existing function but with descending order
-    local comments_response=$(curl -s -H "$auth_header" \
-        "$TEAMWORK_URL/projects/api/v3/tasks/$task_id/comments.json?pageSize=$page_size&orderMode=desc" 2>/dev/null | sed 's/\\r//g; s/\\n/ /g')
+    printf "\033[1mSINGLE TASK OPTIONS\033[0m (for 'tw task')\n"
+    printf "   --no-summary               Disable AI summary\n"
+    printf "   --comments                 Show all comments\n"
+    printf "   --comments=N               Show latest N comments\n"
+    printf "   --output=html              Open task as HTML in browser\n"
+    printf "   --timezone=VALUE           Set display timezone\n\n"
     
-    if [ $? -ne 0 ] || [ -z "$comments_response" ]; then
-        echo "Comments: Unable to fetch comments"
-        return 1
-    fi
+    printf "\033[1mFEATURES\033[0m\n"
+    printf "   • Clean, modern terminal interface\n"
+    printf "   • Smart caching with auto-refresh\n"
+    printf "   • AI-powered task summaries (requires Claude CLI)\n"
+    printf "   • Full-text task search by title or ID\n"
+    printf "   • Project scoping with \"ALL PROJECTS\" option\n"
+    printf "   • Task status tracking with visual indicators\n\n"
     
-    # Check for API errors
-    local error=$(echo "$comments_response" | jq -r '.error // empty')
-    if [ -n "$error" ]; then
-        echo "Comments: API Error - $error"
-        return 1
-    fi
+    printf "\033[1mCONFIGURATION\033[0m\n"
+    printf "   Environment file: ~/.tw.env or ./.env\n"
+    printf "   Required: TEAMWORK_URL, API_KEY, PASSWORD, USER_ID\n"
+    printf "   Optional: CLAUDE_MODEL (default: claude-3-5-sonnet-20241022)\n\n"
     
-    # Validate limit before processing
-    if [ "$comments_limit" != "all" ] && ! [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
-        echo "Comments: Invalid limit '$comments_limit' (use 'all' or a number)"
-        return 1
-    fi
-    
-    # Extract comments data
-    local comments_data=$(echo "$comments_response" | jq -r '.comments // []')
-    local total_comments=$(echo "$comments_data" | jq 'length')
-    
-    if [ "$total_comments" -eq 0 ]; then
-        echo "Comments: No comments found"
-        return 0
-    fi
-    
-    # Apply limit if specified
-    local display_comments=""
-    if [ "$comments_limit" = "all" ]; then
-        display_comments="$comments_data"
-        printf "│ %-79s │\n" "Comments: ($total_comments total)"
-    elif [[ "$comments_limit" =~ ^[0-9]+$ ]]; then
-        local limit_num="$comments_limit"
-        if [ "$limit_num" -ge "$total_comments" ]; then
-            display_comments="$comments_data"
-            printf "│ %-79s │\n" "Comments: (showing all $total_comments)"
-        else
-            # Take the latest N comments (comments are usually returned in reverse chronological order)
-            display_comments=$(echo "$comments_data" | jq ".[0:$limit_num]")
-            printf "│ %-79s │\n" "Comments: (showing latest $limit_num of $total_comments)"
-        fi
-    fi
-    
-    # Add table header for comments
-    printf "├───────────────────────────┬─────────────────┬───────────────────────────────────┤\n"
-    printf "│ %-25s │ %-15s │ %-33s │\n" "Date" "Author" "Content"
-    printf "├───────────────────────────┼─────────────────┼───────────────────────────────────┤\n"
-    
-    # Create a temporary file to store user information cache
-    local user_cache_file=$(mktemp)
-    trap "rm -f $user_cache_file" EXIT
-    
-    # Extract unique user IDs from comments and fetch user information
-    local user_ids=$(echo "$display_comments" | jq -r '.[].postedByUserId // empty' | sort -u)
-    
-    if [ -n "$user_ids" ]; then
-        # Fetch user information for all unique user IDs
-        echo "$user_ids" | while read -r user_id; do
-            if [ -n "$user_id" ] && [ "$user_id" != "null" ]; then
-                local user_response=$(curl -s -H "$auth_header" "$TEAMWORK_URL/projects/api/v3/people/$user_id.json" 2>/dev/null)
-                if [ $? -eq 0 ] && [ -n "$user_response" ]; then
-                    local first_name=$(echo "$user_response" | jq -r '.person.firstName // ""')
-                    local last_name=$(echo "$user_response" | jq -r '.person.lastName // ""')
-                    local full_name=""
-                    
-                    if [ -n "$first_name" ] && [ -n "$last_name" ]; then
-                        full_name="$first_name $last_name"
-                    elif [ -n "$first_name" ]; then
-                        full_name="$first_name"
-                    elif [ -n "$last_name" ]; then
-                        full_name="$last_name"
-                    else
-                        full_name="User $user_id"
-                    fi
-                    
-                    echo "$user_id|$full_name" >> "$user_cache_file"
-                fi
-            fi
-        done
-    fi
-    
-    # Format and display each comment in table format
-    echo "$display_comments" | jq -r '.[] | 
-        (.postedDateTime // .createdDate // .dateCreated // "Unknown date") + "|" + 
-        ((.postedByUserId // "unknown") | tostring) + "|" + 
-        (.body // "No content")' | while IFS='|' read -r date_part user_id_part content_part; do
-        
-        # Format dates if they look like ISO dates
-        local formatted_date="$date_part"
-        if [[ "$date_part" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
-            if [[ "$date_part" =~ Z$ ]]; then
-                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$date_part" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
-            elif [[ "$date_part" =~ \+[0-9]{2}:[0-9]{2}$ ]]; then
-                # Handle timezone offset format
-                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "${date_part//:}" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
-            else
-                # Try basic format without timezone
-                formatted_date=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$date_part" "+%b %d, %Y at %I:%M %p" 2>/dev/null)
-            fi
-            
-            if [ -z "$formatted_date" ]; then
-                formatted_date="$date_part"
-            fi
-        fi
-        
-        # Get author name from user cache file
-        local author_name="Unknown User"
-        if [ "$user_id_part" != "unknown" ] && [ -f "$user_cache_file" ]; then
-            author_name=$(grep "^$user_id_part|" "$user_cache_file" | cut -d'|' -f2)
-            if [ -z "$author_name" ]; then
-                author_name="Unknown User"
-            fi
-        fi
-        
-        # Display comment in table format with full content
-        local date_display="$(echo "$formatted_date" | cut -c1-25)"
-        local author_display="$(echo "$author_name" | cut -c1-15)"
-        
-        # For content, split into multiple lines if needed
-        local content_lines=()
-        local remaining_content="$content_part"
-        
-        # Split content into chunks that fit in the content column (33 chars)
-        while [ ${#remaining_content} -gt 33 ]; do
-            local chunk="${remaining_content:0:33}"
-            
-            # Try to break at word boundary by finding the last space within the chunk
-            local break_pos=33
-            local temp_chunk="$chunk"
-            
-            # Look for the last space character within reasonable distance from the end
-            for ((pos=33; pos>=18; pos--)); do
-                if [ "${remaining_content:$((pos-1)):1}" = " " ]; then
-                    break_pos=$pos
-                    break
-                fi
-            done
-            
-            # Extract the chunk and update remaining content
-            chunk="${remaining_content:0:$break_pos}"
-            
-            # Skip the space if we broke at a word boundary
-            if [ "${remaining_content:$((break_pos-1)):1}" = " " ]; then
-                remaining_content="${remaining_content:$break_pos}"
-            else
-                remaining_content="${remaining_content:$break_pos}"
-            fi
-            
-            # Trim trailing spaces from chunk
-            chunk="${chunk%"${chunk##*[![:space:]]}"}"
-            content_lines+=("$chunk")
-        done
-        
-        # Add remaining content
-        if [ -n "$remaining_content" ]; then
-            content_lines+=("$remaining_content")
-        fi
-        
-        # Display first line with date and author
-        printf "│ %-25s │ %-15s │ %-33s │\n" "$date_display" "$author_display" "${content_lines[0]:-}"
-        
-        # Display additional content lines
-        for ((i=1; i<${#content_lines[@]}; i++)); do
-            printf "│ %-25s │ %-15s │ %-33s │\n" "" "" "${content_lines[i]}"
-        done
-        
-        # Add visual separator after each comment
-        printf "├───────────────────────────┼─────────────────┼───────────────────────────────────┤\n"
-    done
+    printf "\033[1mEXAMPLES\033[0m\n"
+    printf "   tw tasks --comments=3                    # Rich task view with AI summaries\n"
+    printf "   tw task 123456                           # Single task with AI summary\n"  
+    printf "   tw tasks --priority=high --due=overdue   # Urgent tasks only\n"
+    printf "   tw open \"Fix login bug\"                  # Search and open task\n"
+    printf "   tw action 123456                         # Mark as actioned\n\n"
 }
 
 # Function to generate HTML for task display
@@ -3133,7 +3031,7 @@ show_single_task() {
     shift # Remove first argument, rest will be treated as options or part of title
     
     # Parse flags
-    local summary_mode=""
+    local summary_mode="long"
     local debug_mode="false"
     local display_timezone="UTC"  # Default to UTC
     local comments_mode=""
@@ -3143,12 +3041,8 @@ show_single_task() {
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --summary=*)
-                summary_mode="${1#*=}"
-                shift
-                ;;
-            --summary)
-                summary_mode="short"
+            --no-summary)
+                summary_mode=""
                 shift
                 ;;
             --comments=*)
@@ -3341,175 +3235,41 @@ show_single_task() {
         echo -e "$status_indicators"
     fi
     
-    # Display task details in table format
-    printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-    echo -e "│ $(pad_colored_text "$formatted_title" 79) │"
-    printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-    # Show Priority and Due date on separate lines
-    printf "│ %s%*s │\n" "$formatted_priority" $((80 - $(strip_colors "$formatted_priority" | wc -c))) ""
-    printf "│ %s%*s │\n" "$formatted_due_with_color" $((80 - $(strip_colors "$formatted_due_with_color" | wc -c))) ""
-    
-    # Show start date if set
-    if [ "$start_date" != "No start date" ] && [ "$start_date" != "null" ]; then
-        printf "│ Start: %-72s │\n" "$(echo "$formatted_start" | cut -c1-72)"
-    fi
-    
-    # Show description if it exists - start on new line without padding
-    if [ -n "$description" ] && [ "$description" != "null" ] && [ "$description" != "" ]; then
-        printf "│ %-79s │\n" ""
-        printf "│ Description: %-66s │\n" ""
-        # Format description without padding around it
-        echo "$description" | fold -s -w 77 | while IFS= read -r line; do
-            if [ -n "$line" ]; then
-                printf "│ %-79s │\n" "$line"
-            fi
-        done
-    fi
-    
-    printf "│ %-79s │\n" ""
-    printf "│ URL: %-74s │\n" "$(echo "$task_url" | cut -c1-74)"
-    
-    # Show tags if they exist
-    if [ -n "$formatted_tags" ]; then
-        printf "│ Tags: %-73s │\n" "$(echo "$formatted_tags" | cut -c1-73)"
-    fi
-    
-    # Show AI summary if requested
+    # Get AI summary if requested
+    local ai_summary=""
     if [ -n "$summary_mode" ]; then
         local task_with_comments=$(get_task_with_comments "$task_id")
         if [ -n "$task_with_comments" ]; then
             case "$summary_mode" in
                 "short")
                     start_spinner "Generating AI summary..."
-                    local ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                    ai_summary=$(generate_short_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
                     stop_spinner
-                    if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-                        printf "│ %-79s │\n" ""
-                        echo -e "│ \033[95mAI Summary:\033[0m$(printf "%-66s" "") │"
-                        wrap_text_for_table "$ai_summary"
-                    fi
                     ;;
                 "long")
                     start_spinner "Generating AI summary..."
-                    local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
+                    ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at" "$debug_mode")
                     stop_spinner
-                    if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-                        # Check if tags were displayed to determine separator placement
-                        local has_tags="false"
-                        if [ -n "$formatted_tags" ]; then
-                            has_tags="true"
-                        fi
-                        format_long_summary "$ai_summary" "$has_tags"
-                    fi
                     ;;
             esac
         fi
     fi
     
-    # Show comments if requested
+    # Get comments if requested  
+    local comments_data=""
     if [ -n "$comments_mode" ]; then
-        printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-        format_task_comments "$task_id" "$comments_limit"
+        if [ "$comments_limit" = "all" ]; then
+            comments_data=$(fetch_task_comments_for_display "$task_id" "50")
+        else
+            comments_data=$(fetch_task_comments_for_display "$task_id" "$comments_limit")
+        fi
     fi
     
-    printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
+    # Display task in clean format
+    format_clean_single_task_display "$task_name" "$task_id" "$priority" "$formatted_due" "$formatted_start" "$description" "$task_url" "$formatted_tags" "$ai_summary" "$comments_data" "$comments_mode"
     echo
 }
 
-# Function to show detailed summary for a specific task
-show_task_summary() {
-    local input="$1"
-    shift # Remove first argument
-    
-    local task_id=""
-    
-    # Check if input is a number (task ID) or text (task title)
-    if [[ "$input" =~ ^[0-9]+$ ]]; then
-        task_id="$input"
-    else
-        # Search for task by title
-        local search_results=$(find_task_by_title "$input")
-        if [ $? -ne 0 ] || [ -z "$search_results" ]; then
-            echo "Error: Task not found with title containing: $input"
-            return 1
-        fi
-        
-        # Extract task ID from search results
-        task_id=$(echo "$search_results" | jq -r '.[0].id' 2>/dev/null)
-        if [ -z "$task_id" ] || [ "$task_id" = "null" ]; then
-            echo "Error: Could not find task with title: $input"
-            return 1
-        fi
-    fi
-    
-    # Fetch task with comments
-    local task_with_comments=$(get_task_with_comments "$task_id")
-    if [ $? -ne 0 ] || [ -z "$task_with_comments" ]; then
-        echo "Error: Could not fetch task details for ID: $task_id"
-        return 1
-    fi
-    
-    # Extract basic task info
-    local task_name=$(echo "$task_with_comments" | jq -r '.task.name // "Unknown Task"')
-    local priority=$(echo "$task_with_comments" | jq -r '.task.priority // "Normal"')
-    local due_date=$(echo "$task_with_comments" | jq -r '.task.dueDate // "Not set"')
-    local updated_at=$(echo "$task_with_comments" | jq -r '.task.updatedAt // ""')
-    local created_at=$(echo "$task_with_comments" | jq -r '.task.createdAt // ""')
-    
-    # Format due date
-    local formatted_due="$due_date"
-    if [ "$due_date" != "Not set" ] && [ "$due_date" != "null" ]; then
-        formatted_due=$(echo "$due_date" | sed 's/T.*//' | xargs -I {} date -j -f "%Y-%m-%d" {} "+%A %-d %B, %Y" 2>/dev/null || echo "$due_date")
-    fi
-    
-    # Format priority display
-    local priority_display="NORMAL"
-    case "$priority" in
-        "high") priority_display="HIGH" ;;
-        "medium") priority_display="MEDIUM" ;;
-        "low") priority_display="LOW" ;;
-        *) priority_display="NORMAL" ;;
-    esac
-    
-    # Format priority with color
-    local formatted_priority=$(format_priority "$priority_display")
-    
-    # Format due date with overdue check
-    local formatted_due_with_color=$(format_due_date "$due_date" "$formatted_due")
-    
-    # Format task title in bold with status indicators
-    local formatted_title=$(format_task_title "$task_name" "$task_id")
-    local status_indicators=$(build_status_indicators "$task_id" "$updated_at" "$created_at")
-    
-    # Display status indicators above the task table if they exist
-    if [ -n "$status_indicators" ]; then
-        echo -e "$status_indicators"
-    fi
-    
-    # Display task header in table format
-    printf "┌─────────────────────────────────────────────────────────────────────────────────┐\n"
-    echo -e "│ $(pad_colored_text "$formatted_title" 79) │"
-    printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-    # Format with proper padding for colored text
-    local priority_padded=$(pad_colored_text "$formatted_priority" 30)
-    local due_padded=$(pad_colored_text "$formatted_due_with_color" 48)
-    echo "│ $priority_padded │ $due_padded │"
-    printf "├─────────────────────────────────────────────────────────────────────────────────┤\n"
-    
-    # Generate and display long AI summary
-    start_spinner "Generating AI summary..."
-    local ai_summary=$(generate_long_summary "$task_with_comments" "$task_id" "$updated_at")
-    stop_spinner
-    
-    if [ $? -eq 0 ] && [ -n "$ai_summary" ]; then
-        format_long_summary "$ai_summary" "false"
-    else
-        printf "│ %-79s │\n" "AI summary unavailable"
-    fi
-    
-    printf "└─────────────────────────────────────────────────────────────────────────────────┘\n"
-}
 
 # Main command dispatcher
 case "${1:-}" in
@@ -3533,15 +3293,6 @@ case "${1:-}" in
         fi
         shift # Remove 'open'
         open_task "$@"
-        ;;
-    "summary")
-        if [ -z "$2" ]; then
-            echo "Error: Task ID or title is required"
-            echo "Usage: tw summary {ID|Title}"
-            exit 1
-        fi
-        shift # Remove 'summary'
-        show_task_summary "$@"
         ;;
     "activity")
         get_activity
