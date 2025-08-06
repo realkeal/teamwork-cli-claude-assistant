@@ -1695,11 +1695,16 @@ get_tasks() {
     local max_subtasks_per_parent="${SUBTASK_MAX_PER_PARENT:-50}"  # Max subtasks per parent
     local comments_mode="3"  # Comments display mode - default to showing 3 comments
     local comments_limit="3"  # Number of comments to show (when comments_mode is set)
+    local quick_mode=""  # Quick/simple output mode flag
     
     # Parse flags
     shift # Remove 'tasks' from arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --quick)
+                quick_mode="true"
+                shift
+                ;;
             --priority=*)
                 priority_filter="${1#*=}"
                 if [ -n "$priority_filter" ] && ! validate_priority "$priority_filter"; then
@@ -2262,6 +2267,40 @@ get_tasks() {
         # Build task URL
         local task_url="$TEAMWORK_URL/app/tasks/$task_id"
         
+        # Check for quick mode
+        if [ "$quick_mode" = "true" ]; then
+            # Format priority for quick mode
+            local priority_short=""
+            case "$priority" in
+                "high") priority_short="H" ;;
+                "medium") priority_short="M" ;;
+                "low") priority_short="L" ;;
+                *) priority_short="N" ;;
+            esac
+            
+            # Display title with ID, priority, and due date using printf -e for color support
+            if [[ "$formatted_due" == *"OVERDUE"* ]]; then
+                printf "\e[90m#%s\e[0m [\e[91m%s\e[0m] %s \e[90m|\e[0m \e[91m%s\e[0m\n" "$task_id" "$priority_short" "$task_name" "$formatted_due"
+            else
+                # Color priority based on level
+                case "$priority" in
+                    "high") 
+                        printf "\e[90m#%s\e[0m [\e[91m%s\e[0m] %s \e[90m|\e[0m \e[90m%s\e[0m\n" "$task_id" "$priority_short" "$task_name" "$formatted_due"
+                        ;;
+                    "medium") 
+                        printf "\e[90m#%s\e[0m [\e[93m%s\e[0m] %s \e[90m|\e[0m \e[90m%s\e[0m\n" "$task_id" "$priority_short" "$task_name" "$formatted_due"
+                        ;;
+                    "low") 
+                        printf "\e[90m#%s\e[0m [\e[92m%s\e[0m] %s \e[90m|\e[0m \e[90m%s\e[0m\n" "$task_id" "$priority_short" "$task_name" "$formatted_due"
+                        ;;
+                    *) 
+                        printf "\e[90m#%s\e[0m [\e[90m%s\e[0m] %s \e[90m|\e[0m \e[90m%s\e[0m\n" "$task_id" "$priority_short" "$task_name" "$formatted_due"
+                        ;;
+                esac
+            fi
+            continue
+        fi
+        
         # Always use clean format for all task displays
         if true; then
             # Use clean formatting for all tasks
@@ -2577,6 +2616,7 @@ show_help() {
     printf "   --start=VALUE              Filter by start date (today, YYYY-MM-DD)\n"
     printf "   --tags=VALUE               Filter by tag name (case insensitive)\n"
     printf "   --order=VALUE              Sort by: priority, lastupdated, duedate, start\n"
+    printf "   --quick                    Quick view: titles with IDs, priority, and due dates\n"
     printf "   --no-summary               Disable AI summaries\n"
     printf "   --comments                 Show latest 3 comments per task (default)\n"
     printf "   --comments=N               Show latest N comments per task\n"
