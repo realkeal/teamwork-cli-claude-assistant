@@ -1681,6 +1681,9 @@ fetch_subtasks_simple() {
 
 # Function to get tasks
 get_tasks() {
+    # Clear terminal for clean output
+    clear
+    
     # Filter parameters
     local priority_filter=""
     local due_filter=""
